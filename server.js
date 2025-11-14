@@ -5,23 +5,27 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "https://renaeliving.wixsite.com";
+// Allow both Wix editor/hosting origins
+const ALLOWED_ORIGINS = [
+  "https://renaeliving.wixsite.com",
+  "https://renaeliving-wixsite-com.filesusr.com",
+].filter(Boolean);
 
-if (!OPENAI_API_KEY) {
-  console.warn("⚠️ OPENAI_API_KEY is not set. Set it in Render environment variables.");
-}
-
-app.use(express.json());
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow Wix preview + your live subdomain
-      if (!origin) return callback(null, true); // for server-to-server / curl
-      if (origin.startsWith(ALLOWED_ORIGIN)) return callback(null, true);
+      // Allow server-to-server calls with no origin
+      if (!origin) return callback(null, true);
+
+      // Check against allowed list
+      const ok = ALLOWED_ORIGINS.some((allowed) => origin.startsWith(allowed));
+      if (ok) return callback(null, true);
+
       return callback(new Error("Not allowed by CORS: " + origin));
     },
   })
 );
+
 
 app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
