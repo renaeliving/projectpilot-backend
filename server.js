@@ -11,6 +11,8 @@ const ALLOWED_ORIGINS = [
   "https://renaeliving-wixsite-com.filesusr.com",
 ].filter(Boolean);
 
+app.use(express.json());
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -37,19 +39,26 @@ app.post("/api/chat", async (req, res) => {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
     }
 
-    const { message } = req.body;
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "Body must include a 'message' string." });
+    // Be defensive: handle missing or non-JSON bodies gracefully
+    const body = req.body || {};
+    const message = typeof body.message === "string" ? body.message : "";
+
+    if (!message) {
+      return res
+        .status(400)
+        .json({ error: "Body must include a 'message' string." });
     }
 
     const systemPrompt = `
-You are "Kai", an AI Project Management Coach for new project managers using the ProjectPilot website.
+You are "Aero", an AI Project Management Coach for new project managers using the ProjectPilot website.
 - Be friendly, clear, and encouraging.
 - Explain project management concepts in simple language.
 - Use bullet points and short paragraphs.
 - When asked for schedules, create concise markdown tables with tasks, owner, duration, dependencies, and notes.
 - Focus on practical "what to do next" advice.
 `.trim();
+
+
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
