@@ -36,18 +36,32 @@ app.get("/", (req, res) => {
 app.post("/api/chat", async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
-    }
-
-    // Be defensive: handle missing or non-JSON bodies gracefully
-    const body = req.body || {};
-    const message = typeof body.message === "string" ? body.message : "";
-
-    if (!message) {
       return res
-        .status(400)
-        .json({ error: "Body must include a 'message' string." });
+        .status(500)
+        .json({ error: "Missing OPENAI_API_KEY on server." });
     }
+
+    const body = req.body || {};
+    let message = "";
+
+    if (typeof body.message === "string") {
+      message = body.message.trim();
+    } else if (typeof body.text === "string") {
+      // fallback if the frontend ever sends { text: "..." } instead
+      message = body.text.trim();
+    }
+
+    // If no message, just send a friendly default reply instead of 400
+    if (!message) {
+      return res.json({
+        reply:
+          "Hi, I’m Aero. Tell me about your project and I’ll help you build a schedule, identify risks, and figure out what to do next.",
+        audioBase64: null,
+      });
+    }
+
+    // ... call OpenAI using `message` ...
+
 
     const systemPrompt = `
 You are "Aero", an AI Project Management Coach for new project managers using the ProjectPilot website.
