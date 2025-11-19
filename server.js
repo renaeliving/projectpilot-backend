@@ -8,10 +8,13 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 // Allow both Wix editor/hosting origins
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
-  "https://www.projectpilot.ai",           // include in case the DNS uses www
-  "https://renaeliving.wixsite.com",       // keep for editor access
-  "https://renaeliving-wixsite-com.filesusr.com" // keep for media hosting
-].filter(Boolean);
+  "https://www.projectpilot.ai",
+  "https://projectpilot-ai.filesusr.com",
+  "https://www-projectpilot-ai.filesusr.com",
+  "https://renaeliving.wixsite.com",
+  "https://renaeliving-wixsite-com.filesusr.com"
+];
+filter(Boolean);
 
 app.use(
   cors({
