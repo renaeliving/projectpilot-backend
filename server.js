@@ -5,8 +5,9 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "").trim();
-const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "").trim();
+const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
+const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
+
 console.log("ELEVENLABS_API_KEY present:", !!ELEVENLABS_API_KEY);
 console.log("ELEVENLABS_VOICE_ID present:", !!ELEVENLABS_VOICE_ID);
 
