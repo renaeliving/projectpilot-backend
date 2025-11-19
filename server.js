@@ -5,6 +5,9 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
+
 // Allow both Wix editor/hosting origins
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
@@ -97,10 +100,53 @@ You are "Aero", an AI Project Management Coach for new project managers using th
     }
 
     const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content?.trim()
-      || "I’m not sure how to respond to that.";
+ const reply = data?.choices?.[0]?.message?.content?.trim()
+  || "I’m not sure how to respond to that.";
 
-    res.json({ reply });
+///////////////////////////////////////////////////////
+// 🔊 ELEVENLABS TEXT-TO-SPEECH (AERO'S VOICE)
+///////////////////////////////////////////////////////
+let audioBase64 = null;
+
+if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
+  try {
+    const ttsRes = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+          Accept: "audio/mpeg",
+        },
+        body: JSON.stringify({
+          text: reply,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: {
+            stability: 0.6,
+            similarity_boost: 0.85,
+          },
+        }),
+      }
+    );
+
+    if (ttsRes.ok) {
+      const arrayBuffer = await ttsRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      audioBase64 = buffer.toString("base64");
+    } else {
+      console.error("ElevenLabs error:", await ttsRes.text());
+    }
+  } catch (e) {
+    console.error("Error calling ElevenLabs:", e);
+  }
+}
+
+///////////////////////////////////////////////////////
+// RETURN BOTH TEXT AND AUDIO TO THE FRONTEND
+///////////////////////////////////////////////////////
+return res.json({ reply, audioBase64 });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error", detail: err.message });
