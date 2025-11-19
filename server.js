@@ -7,6 +7,9 @@ const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
+console.log("ELEVENLABS_API_KEY present:", !!ELEVENLABS_API_KEY);
+console.log("ELEVENLABS_VOICE_ID present:", !!ELEVENLABS_VOICE_ID);
+
 
 // Allow both Wix editor/hosting origins
 const ALLOWED_ORIGINS = [
@@ -109,6 +112,7 @@ You are "Aero", an AI Project Management Coach for new project managers using th
 let audioBase64 = null;
 
 if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
+  console.log("Calling ElevenLabs TTS with reply length:", reply.length);
   try {
     const ttsRes = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
@@ -140,7 +144,11 @@ if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
   } catch (e) {
     console.error("Error calling ElevenLabs:", e);
   }
+} else {
+  console.log("Skipping ElevenLabs TTS. HasKey:", !!ELEVENLABS_API_KEY, "HasVoice:", !!ELEVENLABS_VOICE_ID);
 }
+
+return res.json({ reply, audioBase64 });
 
 ///////////////////////////////////////////////////////
 // RETURN BOTH TEXT AND AUDIO TO THE FRONTEND
