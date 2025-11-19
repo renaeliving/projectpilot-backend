@@ -13,8 +13,7 @@ const ALLOWED_ORIGINS = [
   "https://www-projectpilot-ai.filesusr.com",
   "https://renaeliving.wixsite.com",
   "https://renaeliving-wixsite-com.filesusr.com"
-];
-filter(Boolean);
+]filter(Boolean);
 
 app.use(
   cors({
