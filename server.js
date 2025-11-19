@@ -8,32 +8,30 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
 const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
 
-console.log("ELEVENLABS_API_KEY present:", !!ELEVENLABS_API_KEY);
-console.log("ELEVENLABS_VOICE_ID present:", !!ELEVENLABS_VOICE_ID);
-
-
-// Allow both Wix editor/hosting origins
+// Allow Wix + new frontend origins
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
   "https://www.projectpilot.ai",
   "https://projectpilot-ai.filesusr.com",
-  "https://www-projectpilot-ai.filesusr.com",
   "https://renaeliving.wixsite.com",
-  "https://renaeliving-wixsite-com.filesusr.com"
+  "https://renaeliving-wixsite-com.filesusr.com",
   "https://projectpilot-frontend.onrender.com"
 ].filter(Boolean);
-
 
 app.use(
   cors({
     origin: (origin, callback) => {
+      // allow server-to-server / Postman / curl
       if (!origin) return callback(null, true);
-      const ok = ALLOWED_ORIGINS.some((allowed) => origin.startsWith(allowed));
+
+      const ok = ALLOWED_ORIGINS.some((allowed) => origin === allowed);
       if (ok) return callback(null, true);
+
       return callback(new Error("Not allowed by CORS: " + origin));
     },
   })
 );
+
 app.use(express.json());
 
 
