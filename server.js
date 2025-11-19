@@ -20,6 +20,7 @@ const ALLOWED_ORIGINS = [
   "https://www-projectpilot-ai.filesusr.com",
   "https://renaeliving.wixsite.com",
   "https://renaeliving-wixsite-com.filesusr.com"
+  "https://projectpilot-frontend.onrender.com"
 ].filter(Boolean);
 
 
