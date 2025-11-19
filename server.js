@@ -7,26 +7,23 @@ const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 // Allow both Wix editor/hosting origins
 const ALLOWED_ORIGINS = [
-  "https://renaeliving.wixsite.com",
-  "https://renaeliving-wixsite-com.filesusr.com",
+  "https://projectpilot.ai",
+  "https://www.projectpilot.ai",           // include in case the DNS uses www
+  "https://renaeliving.wixsite.com",       // keep for editor access
+  "https://renaeliving-wixsite-com.filesusr.com" // keep for media hosting
 ].filter(Boolean);
-
-app.use(express.json());
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow server-to-server calls with no origin
       if (!origin) return callback(null, true);
-
-      // Check against allowed list
       const ok = ALLOWED_ORIGINS.some((allowed) => origin.startsWith(allowed));
       if (ok) return callback(null, true);
-
       return callback(new Error("Not allowed by CORS: " + origin));
     },
   })
 );
+
 
 
 app.get("/", (req, res) => {
