@@ -150,10 +150,7 @@ if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
 
 return res.json({ reply, audioBase64 });
 
-///////////////////////////////////////////////////////
-// RETURN BOTH TEXT AND AUDIO TO THE FRONTEND
-///////////////////////////////////////////////////////
-return res.json({ reply, audioBase64 });
+
 
   } catch (err) {
     console.error(err);
