@@ -55,7 +55,28 @@ app.post("/api/chat", async (req, res) => {
     } else if (typeof body.text === "string") {
       // fallback if the frontend ever sends { text: "..." } instead
       message = body.text.trim();
+      
     }
+        const systemPrompt = `
+You are "Aero", an AI Project Management Coach for new project managers using the ProjectPilot website.
+- Be friendly, clear, and encouraging.
+- Explain project management concepts in simple language.
+- Use bullet points and short paragraphs.
+- When asked for schedules, create concise markdown tables with tasks, owner, duration, dependencies, and notes.
+- Focus on practical "what to do next" advice.
+${userName ? `- The user's first name is "${userName}". Use it naturally in conversation and remember you are their ongoing mentor.` : ""}
+`.trim();
+
+        const body = req.body || {};
+    let message = "";
+    if (typeof body.message === "string") {
+      message = body.message.trim();
+    }
+
+    const userName = typeof body.userName === "string" && body.userName.trim()
+      ? body.userName.trim()
+      : null;
+
 
     // If no message, just send a friendly default reply instead of 400
     if (!message) {
