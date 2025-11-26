@@ -15,7 +15,7 @@ const ALLOWED_ORIGINS = [
   "https://projectpilot-ai.filesusr.com",
   "https://renaeliving.wixsite.com",
   "https://renaeliving-wixsite-com.filesusr.com",
-  "https://projectpilot-frontend.onrender.com"
+  "https://projectpilot-frontend.onrender.com",
 ].filter(Boolean);
 
 app.use(
@@ -34,7 +34,6 @@ app.use(
 
 app.use(express.json());
 
-
 app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
 });
@@ -48,16 +47,30 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const body = req.body || {};
-    let message = "";
 
+    // Support either { message } or { text }
+    let message = "";
     if (typeof body.message === "string") {
       message = body.message.trim();
     } else if (typeof body.text === "string") {
-      // fallback if the frontend ever sends { text: "..." } instead
       message = body.text.trim();
-      
     }
-        const systemPrompt = `
+
+    const userName =
+      typeof body.userName === "string" && body.userName.trim()
+        ? body.userName.trim()
+        : null;
+
+    // If no message, send a friendly default
+    if (!message) {
+      return res.json({
+        reply:
+          "Hi, I’m Aero. Tell me about your project and I’ll help you build a schedule, identify risks, and figure out what to do next.",
+        audioBase64: null,
+      });
+    }
+
+    const systemPrompt = `
 You are "Aero", an AI Project Management Coach for new project managers using the ProjectPilot website.
 - Be friendly, clear, and encouraging.
 - Explain project management concepts in simple language.
@@ -67,40 +80,7 @@ You are "Aero", an AI Project Management Coach for new project managers using th
 ${userName ? `- The user's first name is "${userName}". Use it naturally in conversation and remember you are their ongoing mentor.` : ""}
 `.trim();
 
-        const body = req.body || {};
-    let message = "";
-    if (typeof body.message === "string") {
-      message = body.message.trim();
-    }
-
-    const userName = typeof body.userName === "string" && body.userName.trim()
-      ? body.userName.trim()
-      : null;
-
-
-    // If no message, just send a friendly default reply instead of 400
-    if (!message) {
-      return res.json({
-        reply:
-          "Hi, I’m Aero. Tell me about your project and I’ll help you build a schedule, identify risks, and figure out what to do next.",
-        audioBase64: null,
-      });
-    }
-
-    // ... call OpenAI using `message` ...
-
-
-    const systemPrompt = `
-You are "Aero", an AI Project Management Coach for new project managers using the ProjectPilot website.
-- Be friendly, clear, and encouraging.
-- Explain project management concepts in simple language.
-- Use bullet points and short paragraphs.
-- When asked for schedules, create concise markdown tables with tasks, owner, duration, dependencies, and notes.
-- Focus on practical "what to do next" advice.
-`.trim();
-
-
-
+    // Call OpenAI
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -120,59 +100,65 @@ You are "Aero", an AI Project Management Coach for new project managers using th
     if (!response.ok) {
       const text = await response.text();
       console.error("OpenAI API error:", text);
-      return res.status(500).json({ error: "OpenAI API error", detail: text });
+      return res
+        .status(500)
+        .json({ error: "OpenAI API error", detail: text });
     }
 
     const data = await response.json();
- const reply = data?.choices?.[0]?.message?.content?.trim()
-  || "I’m not sure how to respond to that.";
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "I’m not sure how to respond to that.";
 
-///////////////////////////////////////////////////////
-// 🔊 ELEVENLABS TEXT-TO-SPEECH (AERO'S VOICE)
-///////////////////////////////////////////////////////
-let audioBase64 = null;
+    ///////////////////////////////////////////////////////
+    // 🔊 ELEVENLABS TEXT-TO-SPEECH (AERO'S VOICE)
+    ///////////////////////////////////////////////////////
+    let audioBase64 = null;
 
-if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
-  console.log("Calling ElevenLabs TTS with reply length:", reply.length);
-  try {
-    const ttsRes = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-      {
-        method: "POST",
-        headers: {
-          "xi-api-key": ELEVENLABS_API_KEY,
-          "Content-Type": "application/json",
-          Accept: "audio/mpeg",
-        },
-        body: JSON.stringify({
-          text: reply,
-          model_id: "eleven_multilingual_v2",
-          voice_settings: {
-            stability: 0.6,
-            similarity_boost: 0.85,
-          },
-        }),
+    if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
+      console.log("Calling ElevenLabs TTS with reply length:", reply.length);
+      try {
+        const ttsRes = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+          {
+            method: "POST",
+            headers: {
+              "xi-api-key": ELEVENLABS_API_KEY,
+              "Content-Type": "application/json",
+              Accept: "audio/mpeg",
+            },
+            body: JSON.stringify({
+              text: reply,
+              model_id: "eleven_multilingual_v2",
+              voice_settings: {
+                stability: 0.6,
+                similarity_boost: 0.85,
+              },
+            }),
+          }
+        );
+
+        if (ttsRes.ok) {
+          const arrayBuffer = await ttsRes.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          audioBase64 = buffer.toString("base64");
+        } else {
+          console.error("ElevenLabs error:", await ttsRes.text());
+        }
+      } catch (e) {
+        console.error("Error calling ElevenLabs:", e);
       }
-    );
-
-    if (ttsRes.ok) {
-      const arrayBuffer = await ttsRes.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      audioBase64 = buffer.toString("base64");
     } else {
-      console.error("ElevenLabs error:", await ttsRes.text());
+      console.log(
+        "Skipping ElevenLabs TTS. HasKey:",
+        !!ELEVENLABS_API_KEY,
+        "HasVoice:",
+        !!ELEVENLABS_VOICE_ID
+      );
     }
-  } catch (e) {
-    console.error("Error calling ElevenLabs:", e);
-  }
-} else {
-  console.log("Skipping ElevenLabs TTS. HasKey:", !!ELEVENLABS_API_KEY, "HasVoice:", !!ELEVENLABS_VOICE_ID);
-}
 
-return res.json({ reply, audioBase64 });
-
-
-
+    // Return both text and audio (if available) to the frontend
+    return res.json({ reply, audioBase64 });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error", detail: err.message });
