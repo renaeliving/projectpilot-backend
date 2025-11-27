@@ -296,6 +296,115 @@ ${compactCsv}
     }
   }
 );
+// ============================================================
+// 📁 FILE UPLOAD: /api/upload-schedule
+// ============================================================
+import multer from "multer";
+import { parse } from "csv-parse/sync";
+
+// Upload config (in-memory, max 5 MB)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded." });
+    }
+
+    const csvText = req.file.buffer.toString("utf-8");
+    let records;
+
+    try {
+      records = parse(csvText, {
+        columns: true,
+        skip_empty_lines: true,
+      });
+    } catch (e) {
+      return res.status(400).json({
+        error: "Could not read CSV. Make sure it's a valid exported schedule.",
+      });
+    }
+
+    if (!records.length) {
+      return res.status(400).json({
+        error: "The CSV contains no data.",
+      });
+    }
+
+    // Trim schedule length for token limits
+    const MAX_ROWS = 120;
+    const trimmed = records.slice(0, MAX_ROWS);
+    const headers = Object.keys(trimmed[0]);
+    const headerLine = headers.join(",");
+
+    const lines = trimmed.map((row) =>
+      headers
+        .map((h) =>
+          (row[h] ?? "")
+            .toString()
+            .replace(/[\n\r]+/g, " ")
+            .replace(/,/g, ";")
+        )
+        .join(",")
+    );
+
+    const compactCsv = [headerLine, ...lines].join("\n");
+
+    // Prompt for OpenAI
+    const systemPrompt = `
+You are Aero, an expert project management coach.
+You will be given a project schedule in CSV form.
+Return:
+
+1) A brief 2–4 sentence overall assessment.
+2) The top 8–12 project risks in a markdown table:
+
+| ID | Risk | Why it matters | Suggested mitigation | Likelihood | Impact |
+
+Be practical, concise, and helpful.
+`.trim();
+
+    const userPrompt = `
+Here is a project schedule exported from a planning tool (CSV):
+
+${compactCsv}
+`.trim();
+
+    const openAiResp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+    });
+
+    if (!openAiResp.ok) {
+      const text = await openAiResp.text();
+      console.error("OpenAI error:", text);
+      return res.status(500).json({ error: "OpenAI failed", detail: text });
+    }
+
+    const data = await openAiResp.json();
+    const analysis = data?.choices?.[0]?.message?.content;
+
+    res.json({ analysis });
+  } catch (err) {
+    console.error("Schedule upload error:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 
 app.listen(PORT, () => {
   console.log(`ProjectPilot backend listening on port ${PORT}`);
