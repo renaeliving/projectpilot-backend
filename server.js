@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
+import multer from "multer";
+import { parse } from "csv-parse/sync";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,7 +17,7 @@ const ALLOWED_ORIGINS = [
   "https://projectpilot-ai.filesusr.com",
   "https://renaeliving.wixsite.com",
   "https://renaeliving-wixsite-com.filesusr.com",
-  "https://projectpilot-frontend.onrender.com",
+  "https://projectpilot-frontend.onrender.com"
 ].filter(Boolean);
 
 app.use(
@@ -34,10 +36,12 @@ app.use(
 
 app.use(express.json());
 
+// --------- SIMPLE HEALTH CHECK ----------
 app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
 });
 
+// ============ CHAT ENDPOINT (existing) ============
 app.post("/api/chat", async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
@@ -47,21 +51,16 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const body = req.body || {};
-
-    // Support either { message } or { text }
     let message = "";
+
     if (typeof body.message === "string") {
       message = body.message.trim();
     } else if (typeof body.text === "string") {
+      // fallback if the frontend ever sends { text: "..." } instead
       message = body.text.trim();
     }
 
-    const userName =
-      typeof body.userName === "string" && body.userName.trim()
-        ? body.userName.trim()
-        : null;
-
-    // If no message, send a friendly default
+    // If no message, just send a friendly default reply instead of 400
     if (!message) {
       return res.json({
         reply:
@@ -77,10 +76,8 @@ You are "Aero", an AI Project Management Coach for new project managers using th
 - Use bullet points and short paragraphs.
 - When asked for schedules, create concise markdown tables with tasks, owner, duration, dependencies, and notes.
 - Focus on practical "what to do next" advice.
-${userName ? `- The user's first name is "${userName}". Use it naturally in conversation and remember you are their ongoing mentor.` : ""}
 `.trim();
 
-    // Call OpenAI
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -100,9 +97,7 @@ ${userName ? `- The user's first name is "${userName}". Use it naturally in conv
     if (!response.ok) {
       const text = await response.text();
       console.error("OpenAI API error:", text);
-      return res
-        .status(500)
-        .json({ error: "OpenAI API error", detail: text });
+      return res.status(500).json({ error: "OpenAI API error", detail: text });
     }
 
     const data = await response.json();
@@ -157,13 +152,150 @@ ${userName ? `- The user's first name is "${userName}". Use it naturally in conv
       );
     }
 
-    // Return both text and audio (if available) to the frontend
+    // RETURN BOTH TEXT AND AUDIO TO THE FRONTEND
     return res.json({ reply, audioBase64 });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
+
+// ============ NEW: FILE UPLOAD + SCHEDULE ANALYSIS ============
+
+// in-memory file storage, limit to ~5MB
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+// Expecting CSV for now (Excel can come later)
+app.post(
+  "/api/upload-schedule",
+  upload.single("schedule"),
+  async (req, res) => {
+    try {
+      if (!OPENAI_API_KEY) {
+        return res
+          .status(500)
+          .json({ error: "Missing OPENAI_API_KEY on server." });
+      }
+
+      if (!req.file || !req.file.buffer) {
+        return res
+          .status(400)
+          .json({ error: "No file uploaded. Please attach a CSV file." });
+      }
+
+      const csvText = req.file.buffer.toString("utf-8");
+
+      // Try to parse CSV just to be sure it's valid
+      let records;
+      try {
+        records = parse(csvText, {
+          columns: true,
+          skip_empty_lines: true,
+        });
+      } catch (e) {
+        console.error("CSV parse error:", e);
+        return res.status(400).json({
+          error:
+            "Could not read the file as CSV. Please export your schedule as a CSV with headers.",
+        });
+      }
+
+      if (!records || records.length === 0) {
+        return res.status(400).json({
+          error:
+            "The CSV looks empty. Make sure it includes a header row and at least one task row.",
+        });
+      }
+
+      // Trim to first N rows so we don't blow token limits
+      const MAX_ROWS = 120;
+      const limitedRecords = records.slice(0, MAX_ROWS);
+
+      // Recreate a compact CSV snippet to send to the model
+      const headers = Object.keys(limitedRecords[0]);
+      const headerLine = headers.join(",");
+      const dataLines = limitedRecords.map((row) =>
+        headers
+          .map((h) =>
+            (row[h] ?? "")
+              .toString()
+              .replace(/[\r\n]+/g, " ")
+              .replace(/,/g, ";")
+          )
+          .join(",")
+      );
+      const compactCsv = [headerLine, ...dataLines].join("\n");
+
+      const systemPrompt = `
+You are "Aero", an expert project management coach.
+You will be given a project schedule in CSV format (each row is a task).
+
+Your job:
+- Identify schedule and delivery RISKS.
+- Highlight unrealistic durations, overloaded resources, missing predecessors/successors, and tight handoffs.
+- Call out milestones that look at risk.
+- Suggest concrete mitigation actions.
+
+Format your answer as:
+1) Short overall assessment (2–4 sentences)
+2) Top 8–12 risks in a markdown table:
+
+| ID | Risk | Why it matters | Suggested mitigation | Likelihood (Low/Med/High) | Impact (Low/Med/High) |
+
+Be concise but specific and practical.
+`.trim();
+
+      const userPrompt = `
+Here is a project schedule exported from a planning tool in CSV format.
+The first line is headers, the remaining lines are tasks.
+
+CSV:
+${compactCsv}
+`.trim();
+
+      const response = await fetch(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-4.1-mini",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            temperature: 0.3,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        console.error("OpenAI schedule analysis error:", text);
+        return res.status(500).json({
+          error: "OpenAI schedule analysis error",
+          detail: text,
+        });
+      }
+
+      const data = await response.json();
+      const analysis =
+        data?.choices?.[0]?.message?.content?.trim() ||
+        "I could not generate an analysis from this file.";
+
+      return res.json({ analysis });
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({ error: "Server error", detail: err.message });
+    }
+  }
+);
 
 app.listen(PORT, () => {
   console.log(`ProjectPilot backend listening on port ${PORT}`);
