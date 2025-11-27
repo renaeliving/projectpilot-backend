@@ -1,84 +1,84 @@
+// ===============================
+//  IMPORTS
+// ===============================
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
 import multer from "multer";
 import { parse } from "csv-parse/sync";
 
+// ===============================
+//  CONFIG
+// ===============================
 const app = express();
 const PORT = process.env.PORT || 3000;
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
 const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
 
-// Allow Wix + new frontend origins
+// Allowed domains for CORS (Wix + Render)
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
   "https://www.projectpilot.ai",
-  "https://projectpilot-ai.filesusr.com",
+  "https://projectpilot-frontend.onrender.com",
   "https://renaeliving.wixsite.com",
   "https://renaeliving-wixsite-com.filesusr.com",
-  "https://projectpilot-frontend.onrender.com"
+  "https://projectpilot-ai.filesusr.com"
 ].filter(Boolean);
 
+// ===============================
+//  MIDDLEWARE
+// ===============================
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // allow server-to-server / Postman / curl
-      if (!origin) return callback(null, true);
-
-      const ok = ALLOWED_ORIGINS.some((allowed) => origin === allowed);
-      if (ok) return callback(null, true);
-
-      return callback(new Error("Not allowed by CORS: " + origin));
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // SSR or server-to-server
+      const ok = ALLOWED_ORIGINS.includes(origin);
+      return ok ? cb(null, true) : cb(new Error("CORS blocked: " + origin));
     },
   })
 );
 
 app.use(express.json());
 
-// --------- SIMPLE HEALTH CHECK ----------
+// ===============================
+//  HEALTH CHECK
+// ===============================
 app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
 });
 
-// ============ CHAT ENDPOINT (existing) ============
+// ====================================================================================
+//  CHAT ENDPOINT — AERO RESPONDS USING OPENAI (+ optional ElevenLabs TTS)
+// ====================================================================================
 app.post("/api/chat", async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
-      return res
-        .status(500)
-        .json({ error: "Missing OPENAI_API_KEY on server." });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    const body = req.body || {};
     let message = "";
-
-    if (typeof body.message === "string") {
-      message = body.message.trim();
-    } else if (typeof body.text === "string") {
-      // fallback if the frontend ever sends { text: "..." } instead
-      message = body.text.trim();
+    if (typeof req.body?.message === "string") {
+      message = req.body.message.trim();
     }
 
-    // If no message, just send a friendly default reply instead of 400
     if (!message) {
       return res.json({
-        reply:
-          "Hi, I’m Aero. Tell me about your project and I’ll help you build a schedule, identify risks, and figure out what to do next.",
-        audioBase64: null,
+        reply: "Hi, I’m Aero! Tell me about your project.",
+        audioBase64: null
       });
     }
 
     const systemPrompt = `
-You are "Aero", an AI Project Management Coach for new project managers using the ProjectPilot website.
-- Be friendly, clear, and encouraging.
-- Explain project management concepts in simple language.
-- Use bullet points and short paragraphs.
-- When asked for schedules, create concise markdown tables with tasks, owner, duration, dependencies, and notes.
-- Focus on practical "what to do next" advice.
+You are Aero, an expert project management coach.
+Be clear, helpful, friendly, and provide practical advice.
+Use bullet points and short paragraphs.
+When helpful, generate small simple schedule tables in markdown.
 `.trim();
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    // ---- OpenAI Request ----
+    const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -86,32 +86,30 @@ You are "Aero", an AI Project Management Coach for new project managers using th
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
+        temperature: 0.4,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: message },
-        ],
-        temperature: 0.4,
+          { role: "user", content: message }
+        ]
       }),
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      console.error("OpenAI API error:", text);
-      return res.status(500).json({ error: "OpenAI API error", detail: text });
+    if (!aiResponse.ok) {
+      const text = await aiResponse.text();
+      console.error("OpenAI error:", text);
+      return res.status(500).json({ error: "OpenAI API failed", detail: text });
     }
 
-    const data = await response.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
+    const data = await aiResponse.json();
+    const reply = data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
 
-    ///////////////////////////////////////////////////////
-    // 🔊 ELEVENLABS TEXT-TO-SPEECH (AERO'S VOICE)
-    ///////////////////////////////////////////////////////
+    // ====================================================================================
+    //  ELEVENLABS TTS (OPTIONAL)
+    // ====================================================================================
     let audioBase64 = null;
 
     if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
-      console.log("Calling ElevenLabs TTS with reply length:", reply.length);
       try {
         const ttsRes = await fetch(
           `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
@@ -127,182 +125,33 @@ You are "Aero", an AI Project Management Coach for new project managers using th
               model_id: "eleven_multilingual_v2",
               voice_settings: {
                 stability: 0.6,
-                similarity_boost: 0.85,
+                similarity_boost: 0.85
               },
             }),
           }
         );
 
         if (ttsRes.ok) {
-          const arrayBuffer = await ttsRes.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
+          const buffer = Buffer.from(await ttsRes.arrayBuffer());
           audioBase64 = buffer.toString("base64");
-        } else {
-          console.error("ElevenLabs error:", await ttsRes.text());
         }
       } catch (e) {
-        console.error("Error calling ElevenLabs:", e);
+        console.error("ElevenLabs error:", e);
       }
-    } else {
-      console.log(
-        "Skipping ElevenLabs TTS. HasKey:",
-        !!ELEVENLABS_API_KEY,
-        "HasVoice:",
-        !!ELEVENLABS_VOICE_ID
-      );
     }
 
-    // RETURN BOTH TEXT AND AUDIO TO THE FRONTEND
     return res.json({ reply, audioBase64 });
   } catch (err) {
-    console.error(err);
+    console.error("Chat server error:", err);
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
 
-// ============ NEW: FILE UPLOAD + SCHEDULE ANALYSIS ============
+// ====================================================================================
+//  FILE UPLOAD — CSV SCHEDULE ANALYSIS
+// ====================================================================================
 
-// in-memory file storage, limit to ~5MB
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
-});
-
-// Expecting CSV for now (Excel can come later)
-app.post(
-  "/api/upload-schedule",
-  upload.single("schedule"),
-  async (req, res) => {
-    try {
-      if (!OPENAI_API_KEY) {
-        return res
-          .status(500)
-          .json({ error: "Missing OPENAI_API_KEY on server." });
-      }
-
-      if (!req.file || !req.file.buffer) {
-        return res
-          .status(400)
-          .json({ error: "No file uploaded. Please attach a CSV file." });
-      }
-
-      const csvText = req.file.buffer.toString("utf-8");
-
-      // Try to parse CSV just to be sure it's valid
-      let records;
-      try {
-        records = parse(csvText, {
-          columns: true,
-          skip_empty_lines: true,
-        });
-      } catch (e) {
-        console.error("CSV parse error:", e);
-        return res.status(400).json({
-          error:
-            "Could not read the file as CSV. Please export your schedule as a CSV with headers.",
-        });
-      }
-
-      if (!records || records.length === 0) {
-        return res.status(400).json({
-          error:
-            "The CSV looks empty. Make sure it includes a header row and at least one task row.",
-        });
-      }
-
-      // Trim to first N rows so we don't blow token limits
-      const MAX_ROWS = 120;
-      const limitedRecords = records.slice(0, MAX_ROWS);
-
-      // Recreate a compact CSV snippet to send to the model
-      const headers = Object.keys(limitedRecords[0]);
-      const headerLine = headers.join(",");
-      const dataLines = limitedRecords.map((row) =>
-        headers
-          .map((h) =>
-            (row[h] ?? "")
-              .toString()
-              .replace(/[\r\n]+/g, " ")
-              .replace(/,/g, ";")
-          )
-          .join(",")
-      );
-      const compactCsv = [headerLine, ...dataLines].join("\n");
-
-      const systemPrompt = `
-You are "Aero", an expert project management coach.
-You will be given a project schedule in CSV format (each row is a task).
-
-Your job:
-- Identify schedule and delivery RISKS.
-- Highlight unrealistic durations, overloaded resources, missing predecessors/successors, and tight handoffs.
-- Call out milestones that look at risk.
-- Suggest concrete mitigation actions.
-
-Format your answer as:
-1) Short overall assessment (2–4 sentences)
-2) Top 8–12 risks in a markdown table:
-
-| ID | Risk | Why it matters | Suggested mitigation | Likelihood (Low/Med/High) | Impact (Low/Med/High) |
-
-Be concise but specific and practical.
-`.trim();
-
-      const userPrompt = `
-Here is a project schedule exported from a planning tool in CSV format.
-The first line is headers, the remaining lines are tasks.
-
-CSV:
-${compactCsv}
-`.trim();
-
-      const response = await fetch(
-        "https://api.openai.com/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${OPENAI_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: "gpt-4.1-mini",
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: userPrompt },
-            ],
-            temperature: 0.3,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const text = await response.text();
-        console.error("OpenAI schedule analysis error:", text);
-        return res.status(500).json({
-          error: "OpenAI schedule analysis error",
-          detail: text,
-        });
-      }
-
-      const data = await response.json();
-      const analysis =
-        data?.choices?.[0]?.message?.content?.trim() ||
-        "I could not generate an analysis from this file.";
-
-      return res.json({ analysis });
-    } catch (err) {
-      console.error("Upload error:", err);
-      res.status(500).json({ error: "Server error", detail: err.message });
-    }
-  }
-);
-// ============================================================
-// 📁 FILE UPLOAD: /api/upload-schedule
-// ============================================================
-import multer from "multer";
-import { parse } from "csv-parse/sync";
-
-// Upload config (in-memory, max 5 MB)
+// In-memory file storage (max 5 MB)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -313,10 +162,14 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
     }
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+    }
 
+    // Parse CSV
     const csvText = req.file.buffer.toString("utf-8");
-    let records;
 
+    let records;
     try {
       records = parse(csvText, {
         columns: true,
@@ -324,56 +177,52 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
       });
     } catch (e) {
       return res.status(400).json({
-        error: "Could not read CSV. Make sure it's a valid exported schedule.",
+        error: "Could not parse CSV. Ensure it's a valid exported schedule."
       });
     }
 
     if (!records.length) {
-      return res.status(400).json({
-        error: "The CSV contains no data.",
-      });
+      return res.status(400).json({ error: "CSV contains no data." });
     }
 
-    // Trim schedule length for token limits
+    // Limit rows sent to OpenAI
     const MAX_ROWS = 120;
     const trimmed = records.slice(0, MAX_ROWS);
+
     const headers = Object.keys(trimmed[0]);
     const headerLine = headers.join(",");
 
-    const lines = trimmed.map((row) =>
-      headers
-        .map((h) =>
-          (row[h] ?? "")
-            .toString()
-            .replace(/[\n\r]+/g, " ")
-            .replace(/,/g, ";")
-        )
-        .join(",")
+    const rows = trimmed.map((row) =>
+      headers.map((h) =>
+        (row[h] ?? "")
+          .toString()
+          .replace(/[\n\r]+/g, " ")
+          .replace(/,/g, ";")
+      ).join(",")
     );
 
-    const compactCsv = [headerLine, ...lines].join("\n");
+    const compactCsv = [headerLine, ...rows].join("\n");
 
-    // Prompt for OpenAI
+    // OpenAI prompt
     const systemPrompt = `
-You are Aero, an expert project management coach.
+You are Aero, an expert PM coach.
 You will be given a project schedule in CSV form.
-Return:
 
-1) A brief 2–4 sentence overall assessment.
-2) The top 8–12 project risks in a markdown table:
+Return:
+1. A 2–4 sentence overall assessment.
+2. A markdown table with the top 8–12 risks:
 
 | ID | Risk | Why it matters | Suggested mitigation | Likelihood | Impact |
-
-Be practical, concise, and helpful.
 `.trim();
 
     const userPrompt = `
-Here is a project schedule exported from a planning tool (CSV):
+Here is the project schedule (CSV):
 
 ${compactCsv}
 `.trim();
 
-    const openAiResp = await fetch("https://api.openai.com/v1/chat/completions", {
+    // ---- OpenAI Analysis Call ----
+    const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -384,28 +233,34 @@ ${compactCsv}
         temperature: 0.3,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
+          { role: "user", content: userPrompt }
         ],
       }),
     });
 
-    if (!openAiResp.ok) {
-      const text = await openAiResp.text();
-      console.error("OpenAI error:", text);
-      return res.status(500).json({ error: "OpenAI failed", detail: text });
+    if (!aiResponse.ok) {
+      const text = await aiResponse.text();
+      console.error("OpenAI schedule error:", text);
+      return res.status(500).json({
+        error: "OpenAI schedule analysis error",
+        detail: text
+      });
     }
 
-    const data = await openAiResp.json();
-    const analysis = data?.choices?.[0]?.message?.content;
+    const data = await aiResponse.json();
+    const analysis = data?.choices?.[0]?.message?.content?.trim() ||
+      "I could not generate an analysis.";
 
-    res.json({ analysis });
+    return res.json({ analysis });
   } catch (err) {
     console.error("Schedule upload error:", err);
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
 
-
+// ===============================
+//  START SERVER
+// ===============================
 app.listen(PORT, () => {
-  console.log(`ProjectPilot backend listening on port ${PORT}`);
+  console.log(`ProjectPilot backend running on port ${PORT}`);
 });
