@@ -38,6 +38,13 @@ app.get("/", (req, res) => {
   res.send("ProjectPilot backend running.");
 });
 
+// ===============================
+//  DEBUG GET FOR /api/did-llm
+// ===============================
+app.get("/api/did-llm", (req, res) => {
+  res.send("D-ID LLM endpoint is live. Use POST, not GET.");
+});
+
 // ====================================================================================
 //  CHAT ENDPOINT
 // ====================================================================================
@@ -249,7 +256,11 @@ app.post("/api/did-llm", async (req, res) => {
   try {
     const apiKey = req.headers["x-api-key"];
 
+    console.log("D-ID x-api-key received:", apiKey ? "yes" : "no");
+    console.log("Expected key set:", DID_CUSTOM_LLM_KEY ? "yes" : "no");
+
     if (apiKey !== DID_CUSTOM_LLM_KEY) {
+      console.log("Unauthorized D-ID request");
       return res.status(401).json({
         error: {
           message: "Unauthorized",
@@ -307,7 +318,6 @@ Do not give generic answers.
       data?.choices?.[0]?.message?.content?.trim() ||
       "I'm not sure how to respond.";
 
-    // D-ID non-streaming debug response shape
     return res.json({
       content: reply,
     });
