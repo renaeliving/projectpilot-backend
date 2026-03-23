@@ -29,6 +29,13 @@ const ALLOWED_ORIGINS = [
 ].filter(Boolean);
 
 // ===============================
+//  SIMPLE MEMORY STORE (TEMP)
+// ===============================
+const userSchedules = new Map();
+
+
+
+// ===============================
 //  MIDDLEWARE
 // ===============================
 app.use(
@@ -60,6 +67,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const userId = req.body?.userId || "anonymous";
+    const userSchedule = userSchedules.get(userId);
     console.log("Chat request from user:", userId);
 
     let message = "";
@@ -75,10 +83,24 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const systemPrompt = `
-You are Aero, an expert project management coach.
+const systemPrompt = `
+You are Ray, an expert project management coach.
+
+IMPORTANT CONTEXT:
+${userSchedule ? `
+The user has uploaded a project schedule.
+Here is your previous analysis of it:
+
+${userSchedule.analysis}
+
+You SHOULD reference this when answering questions about their schedule.
+` : `
+The user has NOT uploaded a schedule yet.
+If they ask about one, guide them to upload it.
+`}
+
 Be clear, helpful, friendly, and provide practical advice.
 Use bullet points and short paragraphs.
-When helpful, generate small simple schedule tables in markdown.
 `.trim();
 
     // ---- OpenAI Request ----
@@ -260,7 +282,16 @@ ${compactCsv}
       data?.choices?.[0]?.message?.content?.trim() ||
       "I could not generate an analysis.";
 
-    return res.json({ analysis });
+// Save schedule + analysis for this user
+userSchedules.set(userId, {
+  uploadedAt: new Date().toISOString(),
+  analysis,
+  rawRows: records.slice(0, 20) // optional preview
+});
+
+console.log("Saved schedule for user:", userId);
+
+return res.json({ analysis });
   } catch (err) {
     console.error("Schedule upload error:", err);
     res.status(500).json({ error: "Server error", detail: err.message });
