@@ -23,7 +23,9 @@ const userSchedules = new Map();
 // ===============================
 //  MIDDLEWARE
 // ===============================
-app.use(cors());
+app.use(cors({
+  origin: "*", // 🔥 allow D-ID + browser
+}));
 app.use(express.json());
 
 // ===============================
@@ -61,7 +63,7 @@ If they ask about schedules, guide them to upload a CSV file.
 
 CRITICAL RULES:
 - NEVER give vague answers
-- ALWAYS be specific if schedule exists
+- ALWAYS be specific
 
 UPLOAD REQUIREMENTS:
 If user asks about uploading a schedule, you MUST say:
@@ -84,8 +86,6 @@ If you want deeper analysis, include:
 - Percent complete
 - Constraints
 - Critical path indicators
-
-The more complete the export, the more specific the feedback will be.
 
 DO NOT say:
 - "it just needs to be a CSV"
@@ -120,7 +120,7 @@ DO NOT say:
 });
 
 // ====================================================================================
-//  FILE UPLOAD — CSV SCHEDULE ANALYSIS
+//  FILE UPLOAD
 // ====================================================================================
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -140,10 +140,8 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
         columns: true,
         skip_empty_lines: true
       });
-    } catch (e) {
-      return res.status(400).json({
-        error: "Could not parse CSV."
-      });
+    } catch {
+      return res.status(400).json({ error: "Could not parse CSV." });
     }
 
     if (!records.length) {
@@ -151,41 +149,24 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
     }
 
     const trimmed = records.slice(0, 120);
-
     const headers = Object.keys(trimmed[0]);
 
     const compactCsv = [
       headers.join(","),
       ...trimmed.map(row =>
-        headers.map(h =>
-          (row[h] || "").toString().replace(/,/g, ";")
-        ).join(",")
+        headers.map(h => (row[h] || "").toString().replace(/,/g, ";")).join(",")
       )
     ].join("\n");
 
     const systemPrompt = `
 You are Aero, an expert project schedule reviewer.
 
-CRITICAL RULES:
-- ALWAYS reference specific task names
-- ALWAYS reference dates
-- ALWAYS reference dependencies
-- NEVER be vague
+Be specific. Use task names, dates, and dependencies.
 
-You must identify:
-- Date issues
-- Dependency issues
-- Delivery risks
-
-FORMAT:
-
-1. Overall Assessment
-
-2. Specific Schedule Issues
-| Task Name | Issue Type | What Looks Wrong | Why It Matters | Fix |
-
-3. Top Risks
-| Risk | Tasks | Why | Mitigation | Likelihood | Impact |
+Return:
+1. Summary
+2. Issues table
+3. Risks table
 `.trim();
 
     const userPrompt = `
@@ -213,13 +194,10 @@ ${compactCsv}
     const data = await aiResponse.json();
     const analysis = data?.choices?.[0]?.message?.content || "No analysis.";
 
-    // SAVE TO MEMORY
     userSchedules.set(userId, {
       uploadedAt: new Date().toISOString(),
       analysis
     });
-
-    console.log("Saved schedule for user:", userId);
 
     res.json({ analysis });
 
@@ -230,25 +208,17 @@ ${compactCsv}
 });
 
 // ====================================================================================
-//  D-ID CUSTOM LLM ENDPOINT (PHASE 2)
+//  D-ID CUSTOM LLM ENDPOINT
 // ====================================================================================
 app.post("/api/did-llm", async (req, res) => {
   try {
+    console.log("D-ID CONNECTED");
+
     const body = req.body || {};
-
-    console.log("D-ID payload:", JSON.stringify(body, null, 2));
-
     const messages = body.messages || [];
 
     const lastUserMessage =
       [...messages].reverse().find(m => m.role === "user")?.content || "";
-
-    const systemPrompt = `
-You are Ray, an expert project management coach.
-
-Be clear, practical, and specific.
-Do not give generic answers.
-`.trim();
 
     const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -258,9 +228,8 @@ Do not give generic answers.
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
-        temperature: 0.4,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: "You are Ray, a project coach." },
           { role: "user", content: lastUserMessage }
         ]
       })
@@ -268,30 +237,20 @@ Do not give generic answers.
 
     const data = await aiResponse.json();
 
-    const reply =
-      data?.choices?.[0]?.message?.content ||
-      "I'm not sure how to respond.";
-
     return res.json({
-      id: "ray-response",
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: "gpt-4.1-mini",
       choices: [
         {
-          index: 0,
           message: {
             role: "assistant",
-            content: reply
-          },
-          finish_reason: "stop"
+            content: data.choices[0].message.content
+          }
         }
       ]
     });
 
   } catch (err) {
-    console.error("D-ID LLM error:", err);
-    res.status(500).json({ error: "Server error" });
+    console.error(err);
+    res.status(500).json({ error: "LLM error" });
   }
 });
 
