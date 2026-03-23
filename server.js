@@ -58,6 +58,9 @@ app.post("/api/chat", async (req, res) => {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
+    const userId = req.body?.userId || "anonymous";
+    console.log("Chat request from user:", userId);
+
     let message = "";
     if (typeof req.body?.message === "string") {
       message = req.body.message.trim();
@@ -101,7 +104,8 @@ When helpful, generate small simple schedule tables in markdown.
     }
 
     const data = await aiResponse.json();
-    const reply = data?.choices?.[0]?.message?.content?.trim() ||
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
 
     // ====================================================================================
@@ -159,6 +163,9 @@ const upload = multer({
 
 app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
   try {
+    const userId = req.body?.userId || "anonymous";
+    console.log("Schedule upload from user:", userId);
+
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
     }
@@ -248,7 +255,8 @@ ${compactCsv}
     }
 
     const data = await aiResponse.json();
-    const analysis = data?.choices?.[0]?.message?.content?.trim() ||
+    const analysis =
+      data?.choices?.[0]?.message?.content?.trim() ||
       "I could not generate an analysis.";
 
     return res.json({ analysis });
