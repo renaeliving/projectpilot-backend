@@ -385,7 +385,7 @@ app.post("/api/chat", async (req, res) => {
 
     const systemPrompt = buildSystemPrompt(userSchedule);
 
-   const data = await callOpenAI(
+ const data = await callOpenAI(
   [
     { role: "system", content: systemPrompt },
     ...(userSchedule?.analysis
@@ -394,11 +394,20 @@ app.post("/api/chat", async (req, res) => {
             role: "system",
             content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
 
-${userSchedule.analysis}
+${userSchedule.analysis}`,
+          },
+        ]
+      : []),
+    ...(userSchedule?.rawSchedulePreview
+      ? [
+          {
+            role: "system",
+            content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
 
-You must use this saved schedule analysis when answering schedule-related questions.
-Quote specific task names, dates, risks, and dependencies whenever available.
-Do not claim you cannot see the schedule if analysis is present.`,
+${userSchedule.rawSchedulePreview}
+
+Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
+If this data is present, do not say you cannot see the uploaded schedule.`,
           },
         ]
       : []),
