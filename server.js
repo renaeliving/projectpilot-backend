@@ -245,17 +245,29 @@ app.post("/api/openai/chat/completions", async (req, res) => {
 
     const systemPrompt = buildSystemPrompt(userSchedule);
 
-    const forwardedMessages = [
-      { role: "system", content: systemPrompt },
-      ...incomingMessages
-        .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-        .map((m) => ({
-          role: m.role,
-          content: normalizeMessageContent(m.content),
-        })),
-    ];
+  const forwardedMessages = [
+  { role: "system", content: systemPrompt },
+  ...(userSchedule?.analysis
+    ? [{
+        role: "system",
+        content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
 
-    const data = await callOpenAI(forwardedMessages, 0.4);
+${userSchedule.analysis}
+
+You must use this saved schedule analysis when answering schedule-related questions.
+Quote specific task names, dates, risks, and dependencies whenever available.
+Do not claim you cannot see the schedule if analysis is present.`
+      }]
+    : []),
+  ...incomingMessages
+    .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+    .map((m) => ({
+      role: m.role,
+      content: normalizeMessageContent(m.content),
+    })),
+];
+
+const data = await callOpenAI(forwardedMessages, 0.4);
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I'm not sure how to respond.";
