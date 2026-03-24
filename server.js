@@ -499,11 +499,15 @@ ${compactCsv}
     );
 
     const analysis = data?.choices?.[0]?.message?.content || "No analysis.";
+    const rawSchedulePreview = compactCsv.slice(0, 6000);
 
-    userSchedules.set(userId, {
-      uploadedAt: new Date().toISOString(),
-      analysis,
-    });
+userSchedules.set(userId, {
+  uploadedAt: new Date().toISOString(),
+  analysis,
+  rawSchedulePreview,
+});
+
+
 
     console.log("Saved schedule for user:", userId);
     console.log("Saved analysis preview:", analysis.slice(0, 300));
