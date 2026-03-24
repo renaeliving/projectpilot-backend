@@ -152,6 +152,13 @@ app.get("/api/openai", (req, res) => {
   res.send("OpenAI-compatible base is live.");
 });
 
+// NEW DEBUG ROUTE
+app.get("/api/debug-schedule/:userId", (req, res) => {
+  const userId = req.params.userId;
+  const saved = userSchedules.get(userId) || null;
+  res.json({ userId, saved });
+});
+
 // ====================================================================================
 //  OPENAI-COMPATIBLE ENDPOINTS FOR D-ID
 //  Base URL to use in D-ID:
@@ -358,6 +365,12 @@ app.post("/api/chat", async (req, res) => {
     const message = req.body?.message || "";
     const userSchedule = userSchedules.get(userId);
 
+    console.log("Chat request userId:", userId);
+    console.log("Chat has schedule:", !!userSchedule);
+    if (userSchedule?.analysis) {
+      console.log("Chat schedule preview:", userSchedule.analysis.slice(0, 300));
+    }
+
     const systemPrompt = buildSystemPrompt(userSchedule);
 
     const data = await callOpenAI(
@@ -467,6 +480,7 @@ ${compactCsv}
     });
 
     console.log("Saved schedule for user:", userId);
+    console.log("Saved analysis preview:", analysis.slice(0, 300));
 
     res.json({ analysis });
   } catch (err) {
