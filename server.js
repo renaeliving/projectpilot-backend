@@ -385,13 +385,27 @@ app.post("/api/chat", async (req, res) => {
 
     const systemPrompt = buildSystemPrompt(userSchedule);
 
-    const data = await callOpenAI(
-      [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message },
-      ],
-      0.4
-    );
+   const data = await callOpenAI(
+  [
+    { role: "system", content: systemPrompt },
+    ...(userSchedule?.analysis
+      ? [
+          {
+            role: "system",
+            content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
+
+${userSchedule.analysis}
+
+You must use this saved schedule analysis when answering schedule-related questions.
+Quote specific task names, dates, risks, and dependencies whenever available.
+Do not claim you cannot see the schedule if analysis is present.`,
+          },
+        ]
+      : []),
+    { role: "user", content: message },
+  ],
+  0.4
+);
 
     const reply = data?.choices?.[0]?.message?.content || "No response.";
 
