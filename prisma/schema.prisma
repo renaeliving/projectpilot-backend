@@ -1,0 +1,225 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  external_user_id    String              @unique
+  name                String?
+  email               String?
+  plan_tier           String              @default("free")
+  role                String              @default("standard")
+  feature_flags       Json                @default("{}")
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  last_seen_at        DateTime            @default(now()) @db.Timestamptz(6)
+  activities          Activity[]
+  conversations       Conversation[]
+  issues              Issue[]
+  key_dates           KeyDate[]
+  memory_summaries    MemorySummary[]
+  messages            Message[]
+  risks               Risk[]
+  schedule_analyses   ScheduleAnalysis[]
+  uploaded_files      UploadedFile[]
+  user_profile_memory UserProfileMemory[]
+
+  @@map("users")
+}
+
+model UserProfileMemory {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String   @db.Uuid
+  memory_type  String
+  memory_key   String
+  memory_value String
+  confidence   Decimal? @db.Decimal(3, 2)
+  source       String?
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @db.Timestamptz(6)
+  user         User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("user_profile_memory")
+}
+
+model Conversation {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String             @db.Uuid
+  title             String?
+  status            String             @default("active")
+  created_at        DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime           @default(now()) @db.Timestamptz(6)
+  activities        Activity[]
+  user              User               @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  issues            Issue[]
+  key_dates         KeyDate[]
+  memory_summaries  MemorySummary[]
+  messages          Message[]
+  risks             Risk[]
+  schedule_analyses ScheduleAnalysis[]
+  uploaded_files    UploadedFile[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversation_id String       @db.Uuid
+  user_id         String       @db.Uuid
+  role            String
+  content         String
+  created_at      DateTime     @default(now()) @db.Timestamptz(6)
+  conversation    Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user            User         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("messages")
+}
+
+model UploadedFile {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String             @db.Uuid
+  conversation_id   String?            @db.Uuid
+  filename          String
+  storage_path      String
+  file_type         String
+  mime_type         String?
+  size_bytes        BigInt?
+  uploaded_at       DateTime           @default(now()) @db.Timestamptz(6)
+  schedule_analyses ScheduleAnalysis[]
+  conversation      Conversation?      @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  user              User               @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("uploaded_files")
+}
+
+model ScheduleAnalysis {
+  id                   String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id              String        @db.Uuid
+  conversation_id      String?       @db.Uuid
+  uploaded_file_id     String        @db.Uuid
+  analysis             String
+  raw_schedule_preview String?
+  analysis_version     String        @default("v1")
+  created_at           DateTime      @default(now()) @db.Timestamptz(6)
+  activities           Activity[]
+  conversation         Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  uploaded_file        UploadedFile  @relation(fields: [uploaded_file_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user                 User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("schedule_analyses")
+}
+
+model Activity {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id              String            @db.Uuid
+  conversation_id      String?           @db.Uuid
+  schedule_analysis_id String?           @db.Uuid
+  name                 String
+  activity_type        String
+  owner                String?
+  resource_group       String?
+  start_date           DateTime?         @db.Date
+  finish_date          DateTime?         @db.Date
+  status               String?
+  percent_complete     Decimal?          @db.Decimal(5, 2)
+  predecessors         String?
+  successors           String?
+  notes                String?
+  created_at           DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime          @default(now()) @db.Timestamptz(6)
+  conversation         Conversation?     @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  schedule_analysis    ScheduleAnalysis? @relation(fields: [schedule_analysis_id], references: [id], onUpdate: NoAction)
+  user                 User              @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  issues               Issue[]
+  key_dates            KeyDate[]
+  risks                Risk[]
+
+  @@map("activities")
+}
+
+model KeyDate {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String        @db.Uuid
+  conversation_id String?       @db.Uuid
+  activity_id     String?       @db.Uuid
+  date_type       String
+  title           String
+  date_value      DateTime      @db.Date
+  actual_date     DateTime?     @db.Date
+  outcome         String?
+  status          String        @default("planned")
+  notes           String?
+  created_at      DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime      @default(now()) @db.Timestamptz(6)
+  activity        Activity?     @relation(fields: [activity_id], references: [id], onUpdate: NoAction)
+  conversation    Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  user            User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("key_dates")
+}
+
+model Issue {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String        @db.Uuid
+  conversation_id   String?       @db.Uuid
+  activity_id       String?       @db.Uuid
+  title             String
+  description       String?
+  owner             String?
+  status            String        @default("open")
+  severity          String?
+  target_date       DateTime?     @db.Date
+  resolution_notes  String?
+  first_seen_at     DateTime      @default(now()) @db.Timestamptz(6)
+  last_discussed_at DateTime      @default(now()) @db.Timestamptz(6)
+  created_at        DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime      @default(now()) @db.Timestamptz(6)
+  activity          Activity?     @relation(fields: [activity_id], references: [id], onUpdate: NoAction)
+  conversation      Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  user              User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("issues")
+}
+
+model Risk {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String        @db.Uuid
+  conversation_id   String?       @db.Uuid
+  activity_id       String?       @db.Uuid
+  title             String
+  description       String?
+  owner             String?
+  status            String        @default("open")
+  likelihood        String?
+  impact            String?
+  severity          String?
+  mitigation        String?
+  contingency_plan  String?
+  first_seen_at     DateTime      @default(now()) @db.Timestamptz(6)
+  last_discussed_at DateTime      @default(now()) @db.Timestamptz(6)
+  created_at        DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime      @default(now()) @db.Timestamptz(6)
+  activity          Activity?     @relation(fields: [activity_id], references: [id], onUpdate: NoAction)
+  conversation      Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  user              User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("risks")
+}
+
+model MemorySummary {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String        @db.Uuid
+  conversation_id String?       @db.Uuid
+  summary_type    String
+  summary         String
+  source_range    String?
+  created_at      DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime      @default(now()) @db.Timestamptz(6)
+  conversation    Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  user            User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("memory_summaries")
+}
