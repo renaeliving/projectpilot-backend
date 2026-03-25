@@ -450,7 +450,12 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
 const fileExt = req.file.originalname.split(".").pop() || "csv";
 const fileName = `${dbUser.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
 const filePath = fileName;
+const { data: bucketDebug, error: bucketDebugError } =
+  await supabaseAdmin.storage.listBuckets();
 
+console.log("Upload route bucket check:", bucketDebug);
+console.log("Upload route bucket check error:", bucketDebugError);
+console.log("Upload route target bucket:", "ray-uploads");
 const { error: uploadError } = await supabaseAdmin.storage
   .from("ray-uploads")
   .upload(filePath, req.file.buffer, {
