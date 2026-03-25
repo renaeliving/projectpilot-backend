@@ -4,8 +4,10 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
-  },
+"scripts": {
+  "start": "node server.js",
+  "postinstall": "prisma generate"
+},
   "dependencies": {
     "@prisma/client": "^7.5.0",
     "@supabase/supabase-js": "^2.100.0",
