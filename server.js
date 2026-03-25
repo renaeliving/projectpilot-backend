@@ -456,15 +456,22 @@ const { data: bucketDebug, error: bucketDebugError } =
 console.log("Upload route bucket check:", bucketDebug);
 console.log("Upload route bucket check error:", bucketDebugError);
 console.log("Upload route target bucket:", "ray-uploads");
-const { error: uploadError } = await supabaseAdmin.storage
-  .from("ray-uploads")
-  .upload(filePath, req.file.buffer, {
-    contentType: req.file.mimetype || "text/csv",
-    upsert: false,
-  });
+const uploadUrl = `${process.env.SUPABASE_URL}/storage/v1/object/ray-uploads/${filePath}`;
 
-if (uploadError) {
-  throw new Error(`Storage upload failed: ${uploadError.message}`);
+const uploadResponse = await fetch(uploadUrl, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    apikey: process.env.SUPABASE_SECRET_KEY,
+    "Content-Type": req.file.mimetype || "text/csv",
+    "x-upsert": "false",
+  },
+  body: req.file.buffer,
+});
+
+if (!uploadResponse.ok) {
+  const uploadText = await uploadResponse.text();
+  throw new Error(`Storage upload failed: ${uploadText}`);
 }
 
     const uploadedFile = await prisma.uploadedFile.create({
