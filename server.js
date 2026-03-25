@@ -587,7 +587,29 @@ app.post("/api/did-llm", async (req, res) => {
     });
   }
 });
+app.get("/api/test-supabase", async (req, res) => {
+  try {
+    const dbTest = await prisma.$queryRaw`select now() as current_time`;
 
+    const { data, error } = await supabaseAdmin.storage.listBuckets();
+
+    if (error) {
+      throw new Error(`Supabase storage error: ${error.message}`);
+    }
+
+    res.json({
+      ok: true,
+      database: dbTest,
+      buckets: data,
+    });
+  } catch (err) {
+    console.error("Supabase test error:", err);
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+    });
+  }
+});
 // ===============================
 //  START SERVER
 // ===============================
