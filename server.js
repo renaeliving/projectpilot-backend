@@ -21,7 +21,7 @@ const DID_CUSTOM_LLM_KEY = process.env.DID_CUSTOM_LLM_KEY || "ray-secret-key-111
 // ===============================
 //  SIMPLE MEMORY STORE (TEMP)
 // ===============================
-const userSchedules = new Map();
+
 
 // ===============================
 //  MIDDLEWARE
@@ -435,6 +435,14 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
   try {
     const userId = req.body?.userId || "anonymous";
+    const dbUser = await prisma.user.upsert({
+  where: { external_user_id: userId },
+  update: { last_seen_at: new Date() },
+  create: {
+    external_user_id: userId,
+    last_seen_at: new Date(),
+  },
+});
 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
