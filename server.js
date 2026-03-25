@@ -543,6 +543,15 @@ ${compactCsv}
 
     const analysis = data?.choices?.[0]?.message?.content || "No analysis.";
     const rawSchedulePreview = compactCsv.slice(0, 6000);
+    const savedAnalysis = await prisma.scheduleAnalysis.create({
+  data: {
+    user_id: dbUser.id,
+    uploaded_file_id: uploadedFile.id,
+    analysis,
+    raw_schedule_preview: rawSchedulePreview,
+    analysis_version: "v1",
+  },
+});
 
 
 
