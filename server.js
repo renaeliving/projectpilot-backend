@@ -461,6 +461,17 @@ const { error: uploadError } = await supabaseAdmin.storage
 if (uploadError) {
   throw new Error(`Storage upload failed: ${uploadError.message}`);
 }
+
+    const uploadedFile = await prisma.uploadedFile.create({
+  data: {
+    user_id: dbUser.id,
+    filename: req.file.originalname,
+    storage_path: filePath,
+    file_type: "schedule",
+    mime_type: req.file.mimetype || "text/csv",
+    size_bytes: req.file.size || 0,
+  },
+});
     const csvText = req.file.buffer.toString("utf-8");
 
     let records;
