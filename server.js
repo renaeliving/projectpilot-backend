@@ -60,6 +60,44 @@ function normalizeMessageContent(content) {
   return String(content);
 }
 
+function isScheduleRelatedQuestion(message) {
+  if (!message) return false;
+
+  const text = message.toLowerCase();
+
+  const scheduleTerms = [
+    "schedule",
+    "task",
+    "tasks",
+    "milestone",
+    "milestones",
+    "dependency",
+    "dependencies",
+    "predecessor",
+    "predecessors",
+    "successor",
+    "successors",
+    "timeline",
+    "deadline",
+    "deadlines",
+    "date",
+    "dates",
+    "finish date",
+    "start date",
+    "critical path",
+    "deliverable",
+    "deliverables",
+    "resource",
+    "resources",
+    "owner",
+    "activity",
+    "activities",
+    "project plan"
+  ];
+
+  return scheduleTerms.some((term) => text.includes(term));
+}
+
 async function getDbUserByExternalUserId(externalUserId) {
   if (!externalUserId) return null;
 
@@ -80,25 +118,27 @@ async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
   return { dbUser, latestAnalysis };
 }
 
-function buildSystemPrompt(latestAnalysis) {
+function buildSystemPrompt(latestAnalysis, useScheduleContext = false) {
   return `
 You are Ray, an expert project management coach.
 
 ${
-  latestAnalysis
+  useScheduleContext && latestAnalysis
     ? `
 USER CONTEXT:
 The user has uploaded a project schedule.
-Here is your latest saved analysis:
+Here is the latest saved schedule analysis:
 
 ${latestAnalysis.analysis}
 
-When relevant, reference specific tasks, dates, dependencies, and issues from this analysis.
+Use this schedule context only when the user's question is actually about the schedule, tasks, dates, milestones, issues, dependencies, owners, deliverables, or project timing.
+If the user's question is general and not about the schedule, answer normally and do not force the schedule into the response.
 `
     : `
 USER CONTEXT:
-The user has not uploaded a schedule yet.
-If they ask about schedule analysis, guide them to upload a CSV.
+The user may or may not have uploaded a schedule.
+If their question is about schedule analysis, dates, milestones, dependencies, deliverables, risks, or project timing, you can use saved schedule context if available.
+If their question is general or unrelated, answer normally without forcing schedule context into the answer.
 `
 }
 
@@ -131,7 +171,7 @@ CRITICAL RULES:
 - Never give vague answers.
 - Never say "it just needs to be a CSV."
 - Be specific, practical, and direct.
-- If saved schedule context exists, use it.
+- Only use saved schedule context when it is relevant to the user's question.
 `.trim();
 }
 
@@ -276,12 +316,18 @@ app.post("/api/openai/chat/completions", async (req, res) => {
     const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
     const userId = body.user || body.userId || "anonymous";
 
+    const latestUserMessage =
+      [...incomingMessages].reverse().find((m) => m?.role === "user")?.content || "";
+
+    const normalizedLatestUserMessage = normalizeMessageContent(latestUserMessage);
+    const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLatestUserMessage);
+
     const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
-    const systemPrompt = buildSystemPrompt(latestAnalysis);
+    const systemPrompt = buildSystemPrompt(latestAnalysis, shouldUseScheduleContext);
 
     const forwardedMessages = [
       { role: "system", content: systemPrompt },
-      ...(latestAnalysis?.analysis
+      ...(shouldUseScheduleContext && latestAnalysis?.analysis
         ? [
             {
               role: "system",
@@ -291,7 +337,7 @@ ${latestAnalysis.analysis}`,
             },
           ]
         : []),
-      ...(latestAnalysis?.raw_schedule_preview
+      ...(shouldUseScheduleContext && latestAnalysis?.raw_schedule_preview
         ? [
             {
               role: "system",
@@ -300,7 +346,7 @@ ${latestAnalysis.analysis}`,
 ${latestAnalysis.raw_schedule_preview}
 
 Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
-If this data is present, do not say you cannot see the uploaded schedule.`,
+If this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
             },
           ]
         : []),
@@ -365,12 +411,18 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
     const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
     const userId = body.user || body.userId || "anonymous";
 
+    const latestUserMessage =
+      [...incomingMessages].reverse().find((m) => m?.role === "user")?.content || "";
+
+    const normalizedLatestUserMessage = normalizeMessageContent(latestUserMessage);
+    const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLatestUserMessage);
+
     const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
-    const systemPrompt = buildSystemPrompt(latestAnalysis);
+    const systemPrompt = buildSystemPrompt(latestAnalysis, shouldUseScheduleContext);
 
     const forwardedMessages = [
       { role: "system", content: systemPrompt },
-      ...(latestAnalysis?.analysis
+      ...(shouldUseScheduleContext && latestAnalysis?.analysis
         ? [
             {
               role: "system",
@@ -380,7 +432,7 @@ ${latestAnalysis.analysis}`,
             },
           ]
         : []),
-      ...(latestAnalysis?.raw_schedule_preview
+      ...(shouldUseScheduleContext && latestAnalysis?.raw_schedule_preview
         ? [
             {
               role: "system",
@@ -389,7 +441,7 @@ ${latestAnalysis.analysis}`,
 ${latestAnalysis.raw_schedule_preview}
 
 Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
-If this data is present, do not say you cannot see the uploaded schedule.`,
+If this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
             },
           ]
         : []),
@@ -442,47 +494,47 @@ app.post("/api/chat", async (req, res) => {
   try {
     const userId = req.body?.userId || "anonymous";
     const message = req.body?.message || "";
+
     const dbUser = await prisma.user.upsert({
-  where: { external_user_id: userId },
-  update: { last_seen_at: new Date() },
-  create: {
-    external_user_id: userId,
-    last_seen_at: new Date(),
-  },
-});
+      where: { external_user_id: userId },
+      update: { last_seen_at: new Date() },
+      create: {
+        external_user_id: userId,
+        last_seen_at: new Date(),
+      },
+    });
 
-let conversation = await prisma.conversation.findFirst({
-  where: {
-    user_id: dbUser.id,
-    status: "active",
-  },
-  orderBy: { updated_at: "desc" },
-});
+    let conversation = await prisma.conversation.findFirst({
+      where: {
+        user_id: dbUser.id,
+        status: "active",
+      },
+      orderBy: { updated_at: "desc" },
+    });
 
-if (!conversation) {
-  conversation = await prisma.conversation.create({
-    data: {
-      user_id: dbUser.id,
-      title: "Ray conversation",
-      status: "active",
-    },
-  });
-}
+    if (!conversation) {
+      conversation = await prisma.conversation.create({
+        data: {
+          user_id: dbUser.id,
+          title: "Ray conversation",
+          status: "active",
+        },
+      });
+    }
 
+    const shouldUseScheduleContext = isScheduleRelatedQuestion(message);
     const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
 
     console.log("Chat request userId:", userId);
+    console.log("Use schedule context:", shouldUseScheduleContext);
     console.log("Chat has schedule:", !!latestAnalysis);
-    if (latestAnalysis?.analysis) {
-      console.log("Chat schedule preview:", latestAnalysis.analysis.slice(0, 300));
-    }
 
-    const systemPrompt = buildSystemPrompt(latestAnalysis);
+    const systemPrompt = buildSystemPrompt(latestAnalysis, shouldUseScheduleContext);
 
     const data = await callOpenAI(
       [
         { role: "system", content: systemPrompt },
-        ...(latestAnalysis?.analysis
+        ...(shouldUseScheduleContext && latestAnalysis?.analysis
           ? [
               {
                 role: "system",
@@ -492,7 +544,7 @@ ${latestAnalysis.analysis}`,
               },
             ]
           : []),
-        ...(latestAnalysis?.raw_schedule_preview
+        ...(shouldUseScheduleContext && latestAnalysis?.raw_schedule_preview
           ? [
               {
                 role: "system",
@@ -501,7 +553,7 @@ ${latestAnalysis.analysis}`,
 ${latestAnalysis.raw_schedule_preview}
 
 Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
-If this data is present, do not say you cannot see the uploaded schedule.`,
+If this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
               },
             ]
           : []),
@@ -511,28 +563,30 @@ If this data is present, do not say you cannot see the uploaded schedule.`,
     );
 
     const reply = data?.choices?.[0]?.message?.content || "No response.";
-await prisma.message.create({
-  data: {
-    conversation_id: conversation.id,
-    user_id: dbUser.id,
-    role: "user",
-    content: message,
-  },
-});
 
-await prisma.message.create({
-  data: {
-    conversation_id: conversation.id,
-    user_id: dbUser.id,
-    role: "assistant",
-    content: reply,
-  },
-});
+    await prisma.message.create({
+      data: {
+        conversation_id: conversation.id,
+        user_id: dbUser.id,
+        role: "user",
+        content: message,
+      },
+    });
 
-await prisma.conversation.update({
-  where: { id: conversation.id },
-  data: { updated_at: new Date() },
-});
+    await prisma.message.create({
+      data: {
+        conversation_id: conversation.id,
+        user_id: dbUser.id,
+        role: "assistant",
+        content: reply,
+      },
+    });
+
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { updated_at: new Date() },
+    });
+
     res.json({ reply });
   } catch (err) {
     console.error("Chat error:", err);
@@ -562,9 +616,6 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
       return res.status(400).json({ error: "No file uploaded." });
     }
 
-    // TEMPORARY:
-    // We are recording the file in the DB first, even though storage upload
-    // is temporarily bypassed until the bucket path issue is cleaned up.
     const uploadedFile = await prisma.uploadedFile.create({
       data: {
         user_id: dbUser.id,
@@ -693,15 +744,18 @@ app.post("/api/did-llm", async (req, res) => {
     const lastUserMessage =
       [...messages].reverse().find((m) => m.role === "user")?.content || "";
 
+    const normalizedLastUserMessage = normalizeMessageContent(lastUserMessage);
+    const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLastUserMessage);
+
     const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
 
     const data = await callOpenAI(
       [
         {
           role: "system",
-          content: buildSystemPrompt(latestAnalysis),
+          content: buildSystemPrompt(latestAnalysis, shouldUseScheduleContext),
         },
-        ...(latestAnalysis?.analysis
+        ...(shouldUseScheduleContext && latestAnalysis?.analysis
           ? [
               {
                 role: "system",
@@ -711,7 +765,7 @@ ${latestAnalysis.analysis}`,
               },
             ]
           : []),
-        { role: "user", content: normalizeMessageContent(lastUserMessage) },
+        { role: "user", content: normalizedLastUserMessage },
       ],
       0.4
     );
