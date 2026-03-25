@@ -19,11 +19,6 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DID_CUSTOM_LLM_KEY = process.env.DID_CUSTOM_LLM_KEY || "ray-secret-key-111";
 
 // ===============================
-//  SIMPLE MEMORY STORE (TEMP)
-// ===============================
-
-
-// ===============================
 //  MIDDLEWARE
 // ===============================
 app.use(
@@ -50,6 +45,7 @@ function getInboundApiKey(req) {
 
 function normalizeMessageContent(content) {
   if (typeof content === "string") return content;
+
   if (Array.isArray(content)) {
     return content
       .map((part) => {
@@ -59,27 +55,52 @@ function normalizeMessageContent(content) {
       })
       .join("\n");
   }
+
   if (content == null) return "";
   return String(content);
 }
 
-function buildSystemPrompt(userSchedule) {
+async function getDbUserByExternalUserId(externalUserId) {
+  if (!externalUserId) return null;
+
+  return prisma.user.findUnique({
+    where: { external_user_id: externalUserId },
+  });
+}
+
+async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
+  const dbUser = await getDbUserByExternalUserId(externalUserId);
+  if (!dbUser) return { dbUser: null, latestAnalysis: null };
+
+  const latestAnalysis = await prisma.scheduleAnalysis.findFirst({
+    where: { user_id: dbUser.id },
+    orderBy: { created_at: "desc" },
+  });
+
+  return { dbUser, latestAnalysis };
+}
+
+function buildSystemPrompt(latestAnalysis) {
   return `
 You are Ray, an expert project management coach.
 
-${userSchedule ? `
+${
+  latestAnalysis
+    ? `
 USER CONTEXT:
 The user has uploaded a project schedule.
-Here is your previous analysis:
+Here is your latest saved analysis:
 
-${userSchedule.analysis}
+${latestAnalysis.analysis}
 
 When relevant, reference specific tasks, dates, dependencies, and issues from this analysis.
-` : `
+`
+    : `
 USER CONTEXT:
 The user has not uploaded a schedule yet.
 If they ask about schedule analysis, guide them to upload a CSV.
-`}
+`
+}
 
 UPLOAD REQUIREMENTS:
 If the user asks about uploading a schedule, you MUST explain all of this clearly:
@@ -110,7 +131,7 @@ CRITICAL RULES:
 - Never give vague answers.
 - Never say "it just needs to be a CSV."
 - Be specific, practical, and direct.
-- If schedule context exists, use it.
+- If saved schedule context exists, use it.
 `.trim();
 }
 
@@ -154,22 +175,39 @@ app.get("/api/openai", (req, res) => {
   res.send("OpenAI-compatible base is live.");
 });
 
-// NEW DEBUG ROUTE
-app.get("/api/debug-schedule/:userId", (req, res) => {
-  const userId = req.params.userId;
-  const saved = userSchedules.get(userId) || null;
-  res.json({ userId, saved });
+app.get("/api/debug-schedule/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const dbUser = await prisma.user.findUnique({
+      where: { external_user_id: userId },
+    });
+
+    if (!dbUser) {
+      return res.json({ userId, saved: null });
+    }
+
+    const latestAnalysis = await prisma.scheduleAnalysis.findFirst({
+      where: { user_id: dbUser.id },
+      orderBy: { created_at: "desc" },
+    });
+
+    res.json({
+      userId,
+      saved: latestAnalysis || null,
+    });
+  } catch (err) {
+    console.error("Debug schedule error:", err);
+    res.status(500).json({ error: "Debug lookup failed" });
+  }
 });
 
 // ====================================================================================
-//  OPENAI-COMPATIBLE ENDPOINTS FOR D-ID
-//  Base URL to use in D-ID:
-//  https://projectpilot-backend-zkad.onrender.com/api/openai
+//  OPENAI-COMPATIBLE ENDPOINTS FOR D-ID (legacy compatibility)
 // ====================================================================================
-
-// Models endpoint (main)
 app.get("/api/openai/models", (req, res) => {
   const apiKey = getInboundApiKey(req);
+
   if (apiKey !== DID_CUSTOM_LLM_KEY) {
     return res.status(401).json({
       error: {
@@ -193,9 +231,9 @@ app.get("/api/openai/models", (req, res) => {
   });
 });
 
-// Optional alias if D-ID tries /v1/models
 app.get("/api/openai/v1/models", (req, res) => {
   const apiKey = getInboundApiKey(req);
+
   if (apiKey !== DID_CUSTOM_LLM_KEY) {
     return res.status(401).json({
       error: {
@@ -219,15 +257,11 @@ app.get("/api/openai/v1/models", (req, res) => {
   });
 });
 
-// Chat completions endpoint (main)
 app.post("/api/openai/chat/completions", async (req, res) => {
   try {
     const apiKey = getInboundApiKey(req);
 
-    console.log("OpenAI-compatible auth received:", apiKey ? "yes" : "no");
-
     if (apiKey !== DID_CUSTOM_LLM_KEY) {
-      console.log("Unauthorized OpenAI-compatible request");
       return res.status(401).json({
         error: {
           message: "Unauthorized",
@@ -239,37 +273,46 @@ app.post("/api/openai/chat/completions", async (req, res) => {
     }
 
     const body = req.body || {};
-    console.log("OpenAI-compatible payload:", JSON.stringify(body, null, 2));
-
     const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
     const userId = body.user || body.userId || "anonymous";
-    const userSchedule = userSchedules.get(userId);
 
-    const systemPrompt = buildSystemPrompt(userSchedule);
+    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
+    const systemPrompt = buildSystemPrompt(latestAnalysis);
 
-  const forwardedMessages = [
-  { role: "system", content: systemPrompt },
-  ...(userSchedule?.analysis
-    ? [{
-        role: "system",
-        content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
+    const forwardedMessages = [
+      { role: "system", content: systemPrompt },
+      ...(latestAnalysis?.analysis
+        ? [
+            {
+              role: "system",
+              content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
 
-${userSchedule.analysis}
+${latestAnalysis.analysis}`,
+            },
+          ]
+        : []),
+      ...(latestAnalysis?.raw_schedule_preview
+        ? [
+            {
+              role: "system",
+              content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
 
-You must use this saved schedule analysis when answering schedule-related questions.
-Quote specific task names, dates, risks, and dependencies whenever available.
-Do not claim you cannot see the schedule if analysis is present.`
-      }]
-    : []),
-  ...incomingMessages
-    .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-    .map((m) => ({
-      role: m.role,
-      content: normalizeMessageContent(m.content),
-    })),
-];
+${latestAnalysis.raw_schedule_preview}
 
-const data = await callOpenAI(forwardedMessages, 0.4);
+Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
+If this data is present, do not say you cannot see the uploaded schedule.`,
+            },
+          ]
+        : []),
+      ...incomingMessages
+        .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+        .map((m) => ({
+          role: m.role,
+          content: normalizeMessageContent(m.content),
+        })),
+    ];
+
+    const data = await callOpenAI(forwardedMessages, 0.4);
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I'm not sure how to respond.";
@@ -303,7 +346,6 @@ const data = await callOpenAI(forwardedMessages, 0.4);
   }
 });
 
-// Optional alias if D-ID tries /v1/chat/completions
 app.post("/api/openai/v1/chat/completions", async (req, res) => {
   try {
     const apiKey = getInboundApiKey(req);
@@ -322,12 +364,35 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
     const body = req.body || {};
     const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
     const userId = body.user || body.userId || "anonymous";
-    const userSchedule = userSchedules.get(userId);
 
-    const systemPrompt = buildSystemPrompt(userSchedule);
+    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
+    const systemPrompt = buildSystemPrompt(latestAnalysis);
 
     const forwardedMessages = [
       { role: "system", content: systemPrompt },
+      ...(latestAnalysis?.analysis
+        ? [
+            {
+              role: "system",
+              content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
+
+${latestAnalysis.analysis}`,
+            },
+          ]
+        : []),
+      ...(latestAnalysis?.raw_schedule_preview
+        ? [
+            {
+              role: "system",
+              content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
+
+${latestAnalysis.raw_schedule_preview}
+
+Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
+If this data is present, do not say you cannot see the uploaded schedule.`,
+            },
+          ]
+        : []),
       ...incomingMessages
         .filter((m) => m && (m.role === "user" || m.role === "assistant"))
         .map((m) => ({
@@ -371,55 +436,55 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
 });
 
 // ====================================================================================
-//  EXISTING CHAT ENDPOINT (CURRENT UI)
+//  EXISTING CHAT ENDPOINT
 // ====================================================================================
 app.post("/api/chat", async (req, res) => {
   try {
     const userId = req.body?.userId || "anonymous";
     const message = req.body?.message || "";
-    const userSchedule = userSchedules.get(userId);
+
+    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
 
     console.log("Chat request userId:", userId);
-    console.log("Chat has schedule:", !!userSchedule);
-    if (userSchedule?.analysis) {
-      console.log("Chat schedule preview:", userSchedule.analysis.slice(0, 300));
+    console.log("Chat has schedule:", !!latestAnalysis);
+    if (latestAnalysis?.analysis) {
+      console.log("Chat schedule preview:", latestAnalysis.analysis.slice(0, 300));
     }
 
-    const systemPrompt = buildSystemPrompt(userSchedule);
+    const systemPrompt = buildSystemPrompt(latestAnalysis);
 
- const data = await callOpenAI(
-  [
-    { role: "system", content: systemPrompt },
-    ...(userSchedule?.analysis
-      ? [
-          {
-            role: "system",
-            content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
+    const data = await callOpenAI(
+      [
+        { role: "system", content: systemPrompt },
+        ...(latestAnalysis?.analysis
+          ? [
+              {
+                role: "system",
+                content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
 
-${userSchedule.analysis}`,
-          },
-        ]
-      : []),
-    ...(userSchedule?.rawSchedulePreview
-      ? [
-          {
-            role: "system",
-            content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
+${latestAnalysis.analysis}`,
+              },
+            ]
+          : []),
+        ...(latestAnalysis?.raw_schedule_preview
+          ? [
+              {
+                role: "system",
+                content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
 
-${userSchedule.rawSchedulePreview}
+${latestAnalysis.raw_schedule_preview}
 
 Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
 If this data is present, do not say you cannot see the uploaded schedule.`,
-          },
-        ]
-      : []),
-    { role: "user", content: message },
-  ],
-  0.4
-);
+              },
+            ]
+          : []),
+        { role: "user", content: message },
+      ],
+      0.4
+    );
 
     const reply = data?.choices?.[0]?.message?.content || "No response.";
-
     res.json({ reply });
   } catch (err) {
     console.error("Chat error:", err);
@@ -435,28 +500,34 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
   try {
     const userId = req.body?.userId || "anonymous";
+
     const dbUser = await prisma.user.upsert({
-  where: { external_user_id: userId },
-  update: { last_seen_at: new Date() },
-  create: {
-    external_user_id: userId,
-    last_seen_at: new Date(),
-  },
-});
+      where: { external_user_id: userId },
+      update: { last_seen_at: new Date() },
+      create: {
+        external_user_id: userId,
+        last_seen_at: new Date(),
+      },
+    });
 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
     }
-const uploadedFile = await prisma.uploadedFile.create({
-  data: {
-    user_id: dbUser.id,
-    filename: req.file.originalname,
-    storage_path: `pending/${Date.now()}-${req.file.originalname}`,
-    file_type: "schedule",
-    mime_type: req.file.mimetype || "text/csv",
-    size_bytes: req.file.size || 0,
-  },
-});
+
+    // TEMPORARY:
+    // We are recording the file in the DB first, even though storage upload
+    // is temporarily bypassed until the bucket path issue is cleaned up.
+    const uploadedFile = await prisma.uploadedFile.create({
+      data: {
+        user_id: dbUser.id,
+        filename: req.file.originalname,
+        storage_path: `pending/${Date.now()}-${req.file.originalname}`,
+        file_type: "schedule",
+        mime_type: req.file.mimetype || "text/csv",
+        size_bytes: req.file.size || 0,
+      },
+    });
+
     const csvText = req.file.buffer.toString("utf-8");
 
     let records;
@@ -528,19 +599,16 @@ ${compactCsv}
 
     const analysis = data?.choices?.[0]?.message?.content || "No analysis.";
     const rawSchedulePreview = compactCsv.slice(0, 6000);
-    const savedAnalysis = await prisma.scheduleAnalysis.create({
-  data: {
-    user_id: dbUser.id,
-    uploaded_file_id: uploadedFile.id,
-    analysis,
-    raw_schedule_preview: rawSchedulePreview,
-    analysis_version: "v1",
-  },
-});
 
-
-
-
+    await prisma.scheduleAnalysis.create({
+      data: {
+        user_id: dbUser.id,
+        uploaded_file_id: uploadedFile.id,
+        analysis,
+        raw_schedule_preview: rawSchedulePreview,
+        analysis_version: "v1",
+      },
+    });
 
     console.log("Saved schedule for user:", userId);
     console.log("Saved analysis preview:", analysis.slice(0, 300));
@@ -553,16 +621,13 @@ ${compactCsv}
 });
 
 // ====================================================================================
-//  LEGACY SINGLE-ENDPOINT D-ID ROUTE (can keep for debugging)
+//  LEGACY SINGLE-ENDPOINT D-ID ROUTE
 // ====================================================================================
 app.post("/api/did-llm", async (req, res) => {
   try {
     const apiKey = getInboundApiKey(req);
 
-    console.log("Legacy D-ID auth received:", apiKey ? "yes" : "no");
-
     if (apiKey !== DID_CUSTOM_LLM_KEY) {
-      console.log("Unauthorized legacy D-ID request");
       return res.status(401).json({
         error: {
           message: "Unauthorized",
@@ -574,19 +639,30 @@ app.post("/api/did-llm", async (req, res) => {
     }
 
     const body = req.body || {};
-    console.log("Legacy D-ID payload:", JSON.stringify(body, null, 2));
-
     const messages = Array.isArray(body.messages) ? body.messages : [];
+    const userId = body.user || body.userId || "anonymous";
+
     const lastUserMessage =
       [...messages].reverse().find((m) => m.role === "user")?.content || "";
+
+    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
 
     const data = await callOpenAI(
       [
         {
           role: "system",
-          content:
-            "You are Ray, an expert project management coach. Be clear, practical, and specific.",
+          content: buildSystemPrompt(latestAnalysis),
         },
+        ...(latestAnalysis?.analysis
+          ? [
+              {
+                role: "system",
+                content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
+
+${latestAnalysis.analysis}`,
+              },
+            ]
+          : []),
         { role: "user", content: normalizeMessageContent(lastUserMessage) },
       ],
       0.4
@@ -611,10 +687,13 @@ app.post("/api/did-llm", async (req, res) => {
     });
   }
 });
+
+// ====================================================================================
+//  SUPABASE TEST ROUTE
+// ====================================================================================
 app.get("/api/test-supabase", async (req, res) => {
   try {
     const dbTest = await prisma.$queryRaw`select now() as current_time`;
-
     const { data, error } = await supabaseAdmin.storage.listBuckets();
 
     if (error) {
@@ -634,6 +713,7 @@ app.get("/api/test-supabase", async (req, res) => {
     });
   }
 });
+
 // ===============================
 //  START SERVER
 // ===============================
