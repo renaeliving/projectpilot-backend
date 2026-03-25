@@ -4,13 +4,12 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-"scripts": {
-  "start": "node server.js",
-  "postinstall": "prisma generate"
-},
+    "start": "node server.js",
+    "postinstall": "prisma generate"
+  },
   "dependencies": {
     "@prisma/client": "^7.5.0",
-    "@supabase/supabase-js": "^2.100.0",
+    "@supabase/supabase-js": "^2.57.4",
     "cors": "^2.8.5",
     "csv-parse": "^5.5.4",
     "express": "^4.18.2",
