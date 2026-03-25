@@ -442,6 +442,32 @@ app.post("/api/chat", async (req, res) => {
   try {
     const userId = req.body?.userId || "anonymous";
     const message = req.body?.message || "";
+    const dbUser = await prisma.user.upsert({
+  where: { external_user_id: userId },
+  update: { last_seen_at: new Date() },
+  create: {
+    external_user_id: userId,
+    last_seen_at: new Date(),
+  },
+});
+
+let conversation = await prisma.conversation.findFirst({
+  where: {
+    user_id: dbUser.id,
+    status: "active",
+  },
+  orderBy: { updated_at: "desc" },
+});
+
+if (!conversation) {
+  conversation = await prisma.conversation.create({
+    data: {
+      user_id: dbUser.id,
+      title: "Ray conversation",
+      status: "active",
+    },
+  });
+}
 
     const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
 
@@ -485,6 +511,28 @@ If this data is present, do not say you cannot see the uploaded schedule.`,
     );
 
     const reply = data?.choices?.[0]?.message?.content || "No response.";
+await prisma.message.create({
+  data: {
+    conversation_id: conversation.id,
+    user_id: dbUser.id,
+    role: "user",
+    content: message,
+  },
+});
+
+await prisma.message.create({
+  data: {
+    conversation_id: conversation.id,
+    user_id: dbUser.id,
+    role: "assistant",
+    content: reply,
+  },
+});
+
+await prisma.conversation.update({
+  where: { id: conversation.id },
+  data: { updated_at: new Date() },
+});
     res.json({ reply });
   } catch (err) {
     console.error("Chat error:", err);
