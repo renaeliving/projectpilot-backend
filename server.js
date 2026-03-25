@@ -447,7 +447,20 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
     }
+const fileExt = req.file.originalname.split(".").pop() || "csv";
+const fileName = `${dbUser.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+const filePath = fileName;
 
+const { error: uploadError } = await supabaseAdmin.storage
+  .from("ray-uploads")
+  .upload(filePath, req.file.buffer, {
+    contentType: req.file.mimetype || "text/csv",
+    upsert: false,
+  });
+
+if (uploadError) {
+  throw new Error(`Storage upload failed: ${uploadError.message}`);
+}
     const csvText = req.file.buffer.toString("utf-8");
 
     let records;
@@ -520,11 +533,7 @@ ${compactCsv}
     const analysis = data?.choices?.[0]?.message?.content || "No analysis.";
     const rawSchedulePreview = compactCsv.slice(0, 6000);
 
-userSchedules.set(userId, {
-  uploadedAt: new Date().toISOString(),
-  analysis,
-  rawSchedulePreview,
-});
+
 
 
 
