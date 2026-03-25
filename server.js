@@ -6,6 +6,8 @@ import cors from "cors";
 import fetch from "node-fetch";
 import multer from "multer";
 import { parse } from "csv-parse/sync";
+import { prisma } from "./prismaClient.js";
+import { supabaseAdmin } from "./supabaseClient.js";
 
 // ===============================
 //  CONFIG
