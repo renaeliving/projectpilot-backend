@@ -8,7 +8,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "^7.5.0",
+    "@prisma/client": "^6.16.0",
     "@supabase/supabase-js": "^2.57.4",
     "cors": "^2.8.5",
     "csv-parse": "^5.5.4",
@@ -17,6 +17,6 @@
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "prisma": "^7.5.0"
+    "prisma": "^6.16.0"
   }
 }
