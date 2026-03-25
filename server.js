@@ -447,38 +447,11 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
     }
-const fileExt = req.file.originalname.split(".").pop() || "csv";
-const fileName = `${dbUser.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
-const filePath = fileName;
-const { data: bucketDebug, error: bucketDebugError } =
-  await supabaseAdmin.storage.listBuckets();
-
-console.log("Upload route bucket check:", bucketDebug);
-console.log("Upload route bucket check error:", bucketDebugError);
-console.log("Upload route target bucket:", "ray-uploads");
-const uploadUrl = `${process.env.SUPABASE_URL}/storage/v1/object/ray-uploads/${filePath}`;
-
-const uploadResponse = await fetch(uploadUrl, {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
-    apikey: process.env.SUPABASE_SECRET_KEY,
-    "Content-Type": req.file.mimetype || "text/csv",
-    "x-upsert": "false",
-  },
-  body: req.file.buffer,
-});
-
-if (!uploadResponse.ok) {
-  const uploadText = await uploadResponse.text();
-  throw new Error(`Storage upload failed: ${uploadText}`);
-}
-
-    const uploadedFile = await prisma.uploadedFile.create({
+const uploadedFile = await prisma.uploadedFile.create({
   data: {
     user_id: dbUser.id,
     filename: req.file.originalname,
-    storage_path: filePath,
+    storage_path: `pending/${Date.now()}-${req.file.originalname}`,
     file_type: "schedule",
     mime_type: req.file.mimetype || "text/csv",
     size_bytes: req.file.size || 0,
