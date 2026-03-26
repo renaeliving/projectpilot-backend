@@ -164,7 +164,7 @@ function extractUserProfileMemories(message) {
     lower.includes("i am ") ||
     lower.includes("i'm ")
   ) {
-    // leaving generic identity claims out of profile memory for now
+    // keep core identity in users table for now
   }
 
   return memories;
@@ -387,6 +387,7 @@ async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
 
   return { dbUser, latestAnalysis };
 }
+
 async function getOrCreateProjectForUser(dbUserId, projectName) {
   if (!projectName || !projectName.trim()) return null;
 
@@ -409,6 +410,7 @@ async function getOrCreateProjectForUser(dbUserId, projectName) {
     },
   });
 }
+
 function buildSystemPrompt(latestAnalysis, useScheduleContext = false) {
   return `
 You are Ray, an expert project management coach.
@@ -534,7 +536,7 @@ app.get("/api/debug-schedule/:userId", async (req, res) => {
 });
 
 // ====================================================================================
-//  OPENAI-COMPATIBLE ENDPOINTS FOR D-ID (legacy compatibility)
+//  OPENAI-COMPATIBLE ENDPOINTS FOR D-ID
 // ====================================================================================
 app.get("/api/openai/models", (req, res) => {
   const apiKey = getInboundApiKey(req);
@@ -784,6 +786,7 @@ If this data is present and the user is asking a schedule-related question, do n
 app.post("/api/chat", async (req, res) => {
   try {
     const userId = req.body?.userId || "anonymous";
+    const projectName = req.body?.projectName || "";
     const message = req.body?.message || "";
 
     const dbUser = await prisma.user.upsert({
@@ -795,10 +798,13 @@ app.post("/api/chat", async (req, res) => {
       },
     });
 
+    const project = await getOrCreateProjectForUser(dbUser.id, projectName);
+
     let conversation = await prisma.conversation.findFirst({
       where: {
         user_id: dbUser.id,
         status: "active",
+        project_id: project?.id || null,
       },
       orderBy: { updated_at: "desc" },
     });
@@ -807,6 +813,7 @@ app.post("/api/chat", async (req, res) => {
       conversation = await prisma.conversation.create({
         data: {
           user_id: dbUser.id,
+          project_id: project?.id || null,
           title: "Ray conversation",
           status: "active",
         },
@@ -817,6 +824,7 @@ app.post("/api/chat", async (req, res) => {
     const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
 
     console.log("Chat request userId:", userId);
+    console.log("Project name:", projectName);
     console.log("Use schedule context:", shouldUseScheduleContext);
     console.log("Chat has schedule:", !!latestAnalysis);
 
@@ -888,6 +896,7 @@ If this data is present and the user is asking a schedule-related question, do n
       await prisma.issue.create({
         data: {
           user_id: dbUser.id,
+          project_id: project?.id || null,
           conversation_id: conversation.id,
           title: issue.title,
           description: issue.description,
@@ -907,6 +916,7 @@ If this data is present and the user is asking a schedule-related question, do n
       await prisma.risk.create({
         data: {
           user_id: dbUser.id,
+          project_id: project?.id || null,
           conversation_id: conversation.id,
           title: risk.title,
           description: risk.description,
@@ -929,6 +939,7 @@ If this data is present and the user is asking a schedule-related question, do n
       await prisma.keyDate.create({
         data: {
           user_id: dbUser.id,
+          project_id: project?.id || null,
           conversation_id: conversation.id,
           date_type: keyDate.date_type,
           title: keyDate.title,
@@ -979,6 +990,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
   try {
     const userId = req.body?.userId || "anonymous";
+    const projectName = req.body?.projectName || "";
 
     const dbUser = await prisma.user.upsert({
       where: { external_user_id: userId },
@@ -989,6 +1001,8 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
       },
     });
 
+    const project = await getOrCreateProjectForUser(dbUser.id, projectName);
+
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
     }
@@ -996,6 +1010,7 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
     const uploadedFile = await prisma.uploadedFile.create({
       data: {
         user_id: dbUser.id,
+        project_id: project?.id || null,
         filename: req.file.originalname,
         storage_path: `pending/${Date.now()}-${req.file.originalname}`,
         file_type: "schedule",
@@ -1079,6 +1094,7 @@ ${compactCsv}
     await prisma.scheduleAnalysis.create({
       data: {
         user_id: dbUser.id,
+        project_id: project?.id || null,
         uploaded_file_id: uploadedFile.id,
         analysis,
         raw_schedule_preview: rawSchedulePreview,
@@ -1087,6 +1103,7 @@ ${compactCsv}
     });
 
     console.log("Saved schedule for user:", userId);
+    console.log("Project name:", projectName);
     console.log("Saved analysis preview:", analysis.slice(0, 300));
 
     res.json({ analysis });
