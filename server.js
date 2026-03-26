@@ -387,7 +387,28 @@ async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
 
   return { dbUser, latestAnalysis };
 }
+async function getOrCreateProjectForUser(dbUserId, projectName) {
+  if (!projectName || !projectName.trim()) return null;
 
+  const cleanName = projectName.trim();
+
+  return prisma.project.upsert({
+    where: {
+      user_id_name: {
+        user_id: dbUserId,
+        name: cleanName,
+      },
+    },
+    update: {
+      updated_at: new Date(),
+    },
+    create: {
+      user_id: dbUserId,
+      name: cleanName,
+      status: "active",
+    },
+  });
+}
 function buildSystemPrompt(latestAnalysis, useScheduleContext = false) {
   return `
 You are Ray, an expert project management coach.
