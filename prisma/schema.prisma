@@ -27,7 +27,7 @@ model User {
   schedule_analyses   ScheduleAnalysis[]
   uploaded_files      UploadedFile[]
   user_profile_memory UserProfileMemory[]
-
+projects Project[]
   @@map("users")
 }
 
@@ -62,6 +62,8 @@ model Conversation {
   risks             Risk[]
   schedule_analyses ScheduleAnalysis[]
   uploaded_files    UploadedFile[]
+project_id String?  @db.Uuid
+project    Project? @relation(fields: [project_id], references: [id], onDelete: SetNull)
 
   @@map("conversations")
 }
@@ -92,7 +94,8 @@ model UploadedFile {
   schedule_analyses ScheduleAnalysis[]
   conversation      Conversation?      @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
   user              User               @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
+project_id String?  @db.Uuid
+project    Project? @relation(fields: [project_id], references: [id], onDelete: SetNull)
   @@map("uploaded_files")
 }
 
@@ -109,7 +112,8 @@ model ScheduleAnalysis {
   conversation         Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
   uploaded_file        UploadedFile  @relation(fields: [uploaded_file_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   user                 User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
+project_id String?  @db.Uuid
+project    Project? @relation(fields: [project_id], references: [id], onDelete: SetNull)
   @@map("schedule_analyses")
 }
 
@@ -137,7 +141,8 @@ model Activity {
   issues               Issue[]
   key_dates            KeyDate[]
   risks                Risk[]
-
+project_id String?  @db.Uuid
+project    Project? @relation(fields: [project_id], references: [id], onDelete: SetNull)
   @@map("activities")
 }
 
@@ -158,7 +163,8 @@ model KeyDate {
   activity        Activity?     @relation(fields: [activity_id], references: [id], onUpdate: NoAction)
   conversation    Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
   user            User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
+project_id String?  @db.Uuid
+project    Project? @relation(fields: [project_id], references: [id], onDelete: SetNull)
   @@map("key_dates")
 }
 
@@ -181,7 +187,8 @@ model Issue {
   activity          Activity?     @relation(fields: [activity_id], references: [id], onUpdate: NoAction)
   conversation      Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
   user              User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
+project_id String?  @db.Uuid
+project    Project? @relation(fields: [project_id], references: [id], onDelete: SetNull)
   @@map("issues")
 }
 
@@ -206,7 +213,8 @@ model Risk {
   activity          Activity?     @relation(fields: [activity_id], references: [id], onUpdate: NoAction)
   conversation      Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
   user              User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
+project_id String?  @db.Uuid
+project    Project? @relation(fields: [project_id], references: [id], onDelete: SetNull)
   @@map("risks")
 }
 
@@ -223,4 +231,25 @@ model MemorySummary {
   user            User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("memory_summaries")
+}
+model Project {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String   @db.Uuid
+  name        String
+  description String?
+  status      String?  @default("active")
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  conversations     Conversation[]
+  uploaded_files    UploadedFile[]
+  schedule_analyses ScheduleAnalysis[]
+  issues            Issue[]
+  risks             Risk[]
+  key_dates         KeyDate[]
+  activities        Activity[]
+
+  @@unique([user_id, name], map: "projects_user_id_name_key")
+  @@map("projects")
 }
