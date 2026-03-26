@@ -105,7 +105,78 @@ async function getDbUserByExternalUserId(externalUserId) {
     where: { external_user_id: externalUserId },
   });
 }
+function extractUserProfileMemories(message) {
+  if (!message) return [];
 
+  const text = message.trim();
+  const lower = text.toLowerCase();
+  const memories = [];
+
+  const patterns = [
+    {
+      type: "like",
+      regex: /\b(i like|i enjoy|i love)\s+(.+)$/i,
+      keyPrefix: "like",
+    },
+    {
+      type: "dislike",
+      regex: /\b(i dislike|i do not like|i hate)\s+(.+)$/i,
+      keyPrefix: "dislike",
+    },
+    {
+      type: "interest",
+      regex: /\b(i am interested in|i'm interested in|my interests include)\s+(.+)$/i,
+      keyPrefix: "interest",
+    },
+    {
+      type: "skill",
+      regex: /\b(i am good at|i'm good at|my skills include|i have experience in)\s+(.+)$/i,
+      keyPrefix: "skill",
+    },
+    {
+      type: "knowledge_area",
+      regex: /\b(i know a lot about|i know about|i am knowledgeable about|i'm knowledgeable about)\s+(.+)$/i,
+      keyPrefix: "knowledge",
+    },
+    {
+      type: "working_style",
+      regex: /\b(i prefer to work|i work best|my working style is)\s+(.+)$/i,
+      keyPrefix: "working_style",
+    },
+    {
+      type: "preference",
+      regex: /\b(i prefer|i usually prefer)\s+(.+)$/i,
+      keyPrefix: "preference",
+    },
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern.regex);
+    if (match && match[2]) {
+      const value = match[2].trim().replace(/[.]+$/, "");
+      if (value.length > 1) {
+        memories.push({
+          memory_type: pattern.type,
+          memory_key: `${pattern.keyPrefix}:${value.toLowerCase().slice(0, 80)}`,
+          memory_value: value,
+          confidence: 0.9,
+          source: "chat_message",
+        });
+      }
+    }
+  }
+
+  if (
+    lower.includes("my name is ") ||
+    lower.includes("i am ") ||
+    lower.includes("i'm ")
+  ) {
+    // We are not storing generic identity claims here yet.
+    // Core identity stays in users; profile memory is for preferences/context.
+  }
+
+  return memories;
+}
 async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
   const dbUser = await getDbUserByExternalUserId(externalUserId);
   if (!dbUser) return { dbUser: null, latestAnalysis: null };
@@ -563,7 +634,33 @@ If this data is present and the user is asking a schedule-related question, do n
     );
 
     const reply = data?.choices?.[0]?.message?.content || "No response.";
+const extractedProfileMemories = extractUserProfileMemories(message);
 
+for (const memory of extractedProfileMemories) {
+  await prisma.userProfileMemory.upsert({
+    where: {
+      user_id_memory_key: {
+        user_id: dbUser.id,
+        memory_key: memory.memory_key,
+      },
+    },
+    update: {
+      memory_type: memory.memory_type,
+      memory_value: memory.memory_value,
+      confidence: memory.confidence,
+      source: memory.source,
+      updated_at: new Date(),
+    },
+    create: {
+      user_id: dbUser.id,
+      memory_type: memory.memory_type,
+      memory_key: memory.memory_key,
+      memory_value: memory.memory_value,
+      confidence: memory.confidence,
+      source: memory.source,
+    },
+  });
+}
     await prisma.message.create({
       data: {
         conversation_id: conversation.id,
