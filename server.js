@@ -296,6 +296,81 @@ function extractRisksFromMessage(message) {
 
   return risks;
 }
+function extractKeyDatesFromMessage(message) {
+  if (!message) return [];
+
+  const text = message.trim();
+  const lower = text.toLowerCase();
+  const keyDates = [];
+
+  const datePatterns = [
+    /\bby\s+([A-Z][a-z]+\s+\d{1,2}(?:,\s*\d{4})?|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/,
+    /\bon\s+([A-Z][a-z]+\s+\d{1,2}(?:,\s*\d{4})?|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/,
+    /\bdue\s+([A-Z][a-z]+\s+\d{1,2}(?:,\s*\d{4})?|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/,
+  ];
+
+  let matchedDateText = null;
+
+  for (const pattern of datePatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      matchedDateText = match[1].trim();
+      break;
+    }
+  }
+
+  const keyDateTriggers = [
+    "milestone",
+    "deadline",
+    "deliverable",
+    "meeting",
+    "go-live",
+    "golive",
+    "review",
+    "workshop",
+    "cutover",
+    "uat",
+    "training",
+    "launch",
+    "due",
+    "by ",
+    "on "
+  ];
+
+  const looksLikeKeyDate = keyDateTriggers.some(trigger => lower.includes(trigger));
+
+  if (!looksLikeKeyDate || !matchedDateText) {
+    return keyDates;
+  }
+
+  const parsedDate = new Date(matchedDateText);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return keyDates;
+  }
+
+  let dateType = "deadline";
+  if (lower.includes("milestone")) dateType = "milestone";
+  else if (lower.includes("meeting")) dateType = "meeting";
+  else if (lower.includes("deliverable")) dateType = "deliverable";
+  else if (lower.includes("review")) dateType = "review";
+
+  let title = text.replace(/[.]+$/, "").trim();
+  if (title.length > 120) {
+    title = title.slice(0, 120).trim();
+  }
+
+  keyDates.push({
+    date_type: dateType,
+    title,
+    date_value: parsedDate,
+    actual_date: null,
+    outcome: null,
+    status: "planned",
+    notes: text,
+  });
+
+  return keyDates;
+}
 async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
   const dbUser = await getDbUserByExternalUserId(externalUserId);
   if (!dbUser) return { dbUser: null, latestAnalysis: null };
@@ -818,6 +893,24 @@ for (const risk of extractedRisks) {
       contingency_plan: risk.contingency_plan,
       first_seen_at: new Date(),
       last_discussed_at: new Date(),
+    },
+  });
+}
+    const extractedKeyDates = extractKeyDatesFromMessage(message);
+console.log("Extracted key dates:", extractedKeyDates);
+
+for (const keyDate of extractedKeyDates) {
+  await prisma.keyDate.create({
+    data: {
+      user_id: dbUser.id,
+      conversation_id: conversation.id,
+      date_type: keyDate.date_type,
+      title: keyDate.title,
+      date_value: keyDate.date_value,
+      actual_date: keyDate.actual_date,
+      outcome: keyDate.outcome,
+      status: keyDate.status,
+      notes: keyDate.notes,
     },
   });
 }
