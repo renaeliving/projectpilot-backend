@@ -227,6 +227,75 @@ function extractIssuesFromMessage(message) {
 
   return issues;
 }
+function extractRisksFromMessage(message) {
+  if (!message) return [];
+
+  const text = message.trim();
+  const lower = text.toLowerCase();
+  const risks = [];
+
+  const riskTriggers = [
+    "risk",
+    "at risk",
+    "might",
+    "may",
+    "could",
+    "concern",
+    "worried",
+    "worry",
+    "possible",
+    "potential",
+    "chance",
+    "likely to",
+    "unlikely to",
+    "slip",
+    "miss the deadline",
+    "miss the date",
+    "not finish in time",
+    "won't finish in time",
+    "may not",
+    "might not"
+  ];
+
+  const looksLikeRisk = riskTriggers.some(trigger => lower.includes(trigger));
+
+  if (!looksLikeRisk) {
+    return risks;
+  }
+
+  let title = text.replace(/[.]+$/, "").trim();
+  if (title.length > 120) {
+    title = title.slice(0, 120).trim();
+  }
+
+  let likelihood = "medium";
+  let impact = "medium";
+  let severity = "medium";
+
+  if (
+    lower.includes("high risk") ||
+    lower.includes("serious risk") ||
+    lower.includes("major risk")
+  ) {
+    likelihood = "high";
+    impact = "high";
+    severity = "high";
+  }
+
+  risks.push({
+    title,
+    description: text,
+    owner: null,
+    status: "open",
+    likelihood,
+    impact,
+    severity,
+    mitigation: null,
+    contingency_plan: null,
+  });
+
+  return risks;
+}
 async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
   const dbUser = await getDbUserByExternalUserId(externalUserId);
   if (!dbUser) return { dbUser: null, latestAnalysis: null };
@@ -725,6 +794,28 @@ for (const issue of extractedIssues) {
       status: issue.status,
       severity: issue.severity,
       target_date: issue.target_date,
+      first_seen_at: new Date(),
+      last_discussed_at: new Date(),
+    },
+  });
+}
+const extractedRisks = extractRisksFromMessage(message);
+console.log("Extracted risks:", extractedRisks);
+
+for (const risk of extractedRisks) {
+  await prisma.risk.create({
+    data: {
+      user_id: dbUser.id,
+      conversation_id: conversation.id,
+      title: risk.title,
+      description: risk.description,
+      owner: risk.owner,
+      status: risk.status,
+      likelihood: risk.likelihood,
+      impact: risk.impact,
+      severity: risk.severity,
+      mitigation: risk.mitigation,
+      contingency_plan: risk.contingency_plan,
       first_seen_at: new Date(),
       last_discussed_at: new Date(),
     },
