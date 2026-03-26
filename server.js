@@ -712,7 +712,8 @@ for (const memory of extractedProfileMemories) {
   });
 }
     const extractedIssues = extractIssuesFromMessage(message);
-
+    
+console.log("Extracted issues:", extractedIssues);
 for (const issue of extractedIssues) {
   await prisma.issue.create({
     data: {
