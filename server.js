@@ -177,6 +177,56 @@ function extractUserProfileMemories(message) {
 
   return memories;
 }
+function extractIssuesFromMessage(message) {
+  if (!message) return [];
+
+  const text = message.trim();
+  const lower = text.toLowerCase();
+  const issues = [];
+
+  const issueTriggers = [
+    "blocked",
+    "stuck",
+    "issue",
+    "problem",
+    "delay",
+    "delayed",
+    "late",
+    "waiting on",
+    "waiting for",
+    "hasn't",
+    "have not",
+    "unable to",
+    "can't",
+    "cannot",
+    "not ready",
+    "missing",
+    "failed",
+    "failure"
+  ];
+
+  const looksLikeIssue = issueTriggers.some(trigger => lower.includes(trigger));
+
+  if (!looksLikeIssue) {
+    return issues;
+  }
+
+  let title = text.replace(/[.]+$/, "").trim();
+  if (title.length > 120) {
+    title = title.slice(0, 120).trim();
+  }
+
+  issues.push({
+    title,
+    description: text,
+    status: "open",
+    severity: "medium",
+    owner: null,
+    target_date: null,
+  });
+
+  return issues;
+}
 async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
   const dbUser = await getDbUserByExternalUserId(externalUserId);
   if (!dbUser) return { dbUser: null, latestAnalysis: null };
@@ -658,6 +708,24 @@ for (const memory of extractedProfileMemories) {
       memory_value: memory.memory_value,
       confidence: memory.confidence,
       source: memory.source,
+    },
+  });
+}
+    const extractedIssues = extractIssuesFromMessage(message);
+
+for (const issue of extractedIssues) {
+  await prisma.issue.create({
+    data: {
+      user_id: dbUser.id,
+      conversation_id: conversation.id,
+      title: issue.title,
+      description: issue.description,
+      owner: issue.owner,
+      status: issue.status,
+      severity: issue.severity,
+      target_date: issue.target_date,
+      first_seen_at: new Date(),
+      last_discussed_at: new Date(),
     },
   });
 }
