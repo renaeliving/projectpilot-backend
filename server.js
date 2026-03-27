@@ -376,16 +376,34 @@ async function getDbUserByExternalUserId(externalUserId) {
   });
 }
 
-async function getLatestScheduleAnalysisForExternalUserId(externalUserId) {
+async function getLatestScheduleAnalysisForUserProject(externalUserId, projectName) {
   const dbUser = await getDbUserByExternalUserId(externalUserId);
-  if (!dbUser) return { dbUser: null, latestAnalysis: null };
+  if (!dbUser) {
+    return { dbUser: null, project: null, latestAnalysis: null };
+  }
+
+  let project = null;
+
+  if (projectName && projectName.trim()) {
+    project = await prisma.project.findUnique({
+      where: {
+        user_id_name: {
+          user_id: dbUser.id,
+          name: projectName.trim(),
+        },
+      },
+    });
+  }
 
   const latestAnalysis = await prisma.scheduleAnalysis.findFirst({
-    where: { user_id: dbUser.id },
+    where: {
+      user_id: dbUser.id,
+      project_id: project?.id || null,
+    },
     orderBy: { created_at: "desc" },
   });
 
-  return { dbUser, latestAnalysis };
+  return { dbUser, project, latestAnalysis };
 }
 
 async function getOrCreateProjectForUser(dbUserId, projectName) {
@@ -605,9 +623,10 @@ app.post("/api/openai/chat/completions", async (req, res) => {
       });
     }
 
-    const body = req.body || {};
-    const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
-    const userId = body.user || body.userId || "anonymous";
+   const body = req.body || {};
+const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
+const userId = body.user || body.userId || "anonymous";
+const projectName = body.projectName || "";
 
     const latestUserMessage =
       [...incomingMessages].reverse().find((m) => m?.role === "user")?.content || "";
@@ -615,7 +634,10 @@ app.post("/api/openai/chat/completions", async (req, res) => {
     const normalizedLatestUserMessage = normalizeMessageContent(latestUserMessage);
     const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLatestUserMessage);
 
-    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
+   const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+  userId,
+  projectName
+);
     const systemPrompt = buildSystemPrompt(latestAnalysis, shouldUseScheduleContext);
 
     const forwardedMessages = [
@@ -701,8 +723,9 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
     }
 
     const body = req.body || {};
-    const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
-    const userId = body.user || body.userId || "anonymous";
+const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
+const userId = body.user || body.userId || "anonymous";
+const projectName = body.projectName || "";
 
     const latestUserMessage =
       [...incomingMessages].reverse().find((m) => m?.role === "user")?.content || "";
@@ -710,7 +733,10 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
     const normalizedLatestUserMessage = normalizeMessageContent(latestUserMessage);
     const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLatestUserMessage);
 
-    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
+ const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+  userId,
+  projectName
+);
     const systemPrompt = buildSystemPrompt(latestAnalysis, shouldUseScheduleContext);
 
     const forwardedMessages = [
@@ -821,7 +847,10 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const shouldUseScheduleContext = isScheduleRelatedQuestion(message);
-    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
+ const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+  userId,
+  projectName
+);
 
     console.log("Chat request userId:", userId);
     console.log("Project name:", projectName);
@@ -1131,9 +1160,10 @@ app.post("/api/did-llm", async (req, res) => {
       });
     }
 
-    const body = req.body || {};
-    const messages = Array.isArray(body.messages) ? body.messages : [];
-    const userId = body.user || body.userId || "anonymous";
+   const body = req.body || {};
+let message = "";
+const userId = body.userId || "anonymous";
+const projectName = body.projectName || "";
 
     const lastUserMessage =
       [...messages].reverse().find((m) => m.role === "user")?.content || "";
@@ -1141,7 +1171,10 @@ app.post("/api/did-llm", async (req, res) => {
     const normalizedLastUserMessage = normalizeMessageContent(lastUserMessage);
     const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLastUserMessage);
 
-    const { latestAnalysis } = await getLatestScheduleAnalysisForExternalUserId(userId);
+   const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+  userId,
+  projectName
+);
 
     const data = await callOpenAI(
       [
