@@ -429,6 +429,28 @@ async function getOrCreateProjectForUser(dbUserId, projectName) {
   });
 }
 
+async function getProjectsForExternalUserId(externalUserId) {
+  if (!externalUserId) return [];
+
+  const dbUser = await getDbUserByExternalUserId(externalUserId);
+  if (!dbUser) return [];
+
+  return prisma.project.findMany({
+    where: {
+      user_id: dbUser.id,
+      status: "active",
+    },
+    orderBy: {
+      updated_at: "desc",
+    },
+    select: {
+      id: true,
+      name: true,
+      updated_at: true,
+    },
+  });
+}
+
 function buildSystemPrompt(latestAnalysis, useScheduleContext = false) {
   return `
 You are Ray, an expert project management coach.
@@ -553,6 +575,32 @@ app.get("/api/debug-schedule/:userId", async (req, res) => {
   }
 });
 
+// ===============================
+//  USER PROJECT LIST
+// ===============================
+app.get("/api/projects", async (req, res) => {
+  try {
+    const userId = (req.query?.userId || "").toString().trim();
+
+    if (!userId) {
+      return res.status(400).json({ error: "Missing userId." });
+    }
+
+    const projects = await getProjectsForExternalUserId(userId);
+
+    return res.json({
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        updated_at: project.updated_at,
+      })),
+    });
+  } catch (err) {
+    console.error("Project list error:", err);
+    return res.status(500).json({ error: "Could not load projects." });
+  }
+});
+
 // ====================================================================================
 //  OPENAI-COMPATIBLE ENDPOINTS FOR D-ID
 // ====================================================================================
@@ -623,10 +671,10 @@ app.post("/api/openai/chat/completions", async (req, res) => {
       });
     }
 
-   const body = req.body || {};
-const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
-const userId = body.user || body.userId || "anonymous";
-const projectName = body.projectName || "";
+    const body = req.body || {};
+    const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
+    const userId = body.user || body.userId || "anonymous";
+    const projectName = body.projectName || "";
 
     const latestUserMessage =
       [...incomingMessages].reverse().find((m) => m?.role === "user")?.content || "";
@@ -634,10 +682,10 @@ const projectName = body.projectName || "";
     const normalizedLatestUserMessage = normalizeMessageContent(latestUserMessage);
     const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLatestUserMessage);
 
-   const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
-  userId,
-  projectName
-);
+    const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+      userId,
+      projectName
+    );
     const systemPrompt = buildSystemPrompt(latestAnalysis, shouldUseScheduleContext);
 
     const forwardedMessages = [
@@ -723,9 +771,9 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
     }
 
     const body = req.body || {};
-const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
-const userId = body.user || body.userId || "anonymous";
-const projectName = body.projectName || "";
+    const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
+    const userId = body.user || body.userId || "anonymous";
+    const projectName = body.projectName || "";
 
     const latestUserMessage =
       [...incomingMessages].reverse().find((m) => m?.role === "user")?.content || "";
@@ -733,10 +781,10 @@ const projectName = body.projectName || "";
     const normalizedLatestUserMessage = normalizeMessageContent(latestUserMessage);
     const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLatestUserMessage);
 
- const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
-  userId,
-  projectName
-);
+    const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+      userId,
+      projectName
+    );
     const systemPrompt = buildSystemPrompt(latestAnalysis, shouldUseScheduleContext);
 
     const forwardedMessages = [
@@ -847,10 +895,10 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const shouldUseScheduleContext = isScheduleRelatedQuestion(message);
- const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
-  userId,
-  projectName
-);
+    const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+      userId,
+      projectName
+    );
 
     console.log("Chat request userId:", userId);
     console.log("Project name:", projectName);
@@ -1160,10 +1208,10 @@ app.post("/api/did-llm", async (req, res) => {
       });
     }
 
-   const body = req.body || {};
-let message = "";
-const userId = body.userId || "anonymous";
-const projectName = body.projectName || "";
+    const body = req.body || {};
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const userId = body.userId || "anonymous";
+    const projectName = body.projectName || "";
 
     const lastUserMessage =
       [...messages].reverse().find((m) => m.role === "user")?.content || "";
@@ -1171,10 +1219,10 @@ const projectName = body.projectName || "";
     const normalizedLastUserMessage = normalizeMessageContent(lastUserMessage);
     const shouldUseScheduleContext = isScheduleRelatedQuestion(normalizedLastUserMessage);
 
-   const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
-  userId,
-  projectName
-);
+    const { latestAnalysis } = await getLatestScheduleAnalysisForUserProject(
+      userId,
+      projectName
+    );
 
     const data = await callOpenAI(
       [
