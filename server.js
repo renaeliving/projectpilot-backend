@@ -159,14 +159,6 @@ function extractUserProfileMemories(message) {
     }
   }
 
-  if (
-    lower.includes("my name is ") ||
-    lower.includes("i am ") ||
-    lower.includes("i'm ")
-  ) {
-    // keep core identity in users table for now
-  }
-
   return memories;
 }
 
@@ -199,15 +191,10 @@ function extractIssuesFromMessage(message) {
   ];
 
   const looksLikeIssue = issueTriggers.some((trigger) => lower.includes(trigger));
-
-  if (!looksLikeIssue) {
-    return issues;
-  }
+  if (!looksLikeIssue) return issues;
 
   let title = text.replace(/[.]+$/, "").trim();
-  if (title.length > 120) {
-    title = title.slice(0, 120).trim();
-  }
+  if (title.length > 120) title = title.slice(0, 120).trim();
 
   issues.push({
     title,
@@ -252,15 +239,10 @@ function extractRisksFromMessage(message) {
   ];
 
   const looksLikeRisk = riskTriggers.some((trigger) => lower.includes(trigger));
-
-  if (!looksLikeRisk) {
-    return risks;
-  }
+  if (!looksLikeRisk) return risks;
 
   let title = text.replace(/[.]+$/, "").trim();
-  if (title.length > 120) {
-    title = title.slice(0, 120).trim();
-  }
+  if (title.length > 120) title = title.slice(0, 120).trim();
 
   let likelihood = "medium";
   let impact = "medium";
@@ -306,7 +288,6 @@ function extractKeyDatesFromMessage(message) {
   ];
 
   let matchedDateText = null;
-
   for (const pattern of datePatterns) {
     const match = text.match(pattern);
     if (match && match[1]) {
@@ -334,15 +315,10 @@ function extractKeyDatesFromMessage(message) {
   ];
 
   const looksLikeKeyDate = keyDateTriggers.some((trigger) => lower.includes(trigger));
-
-  if (!looksLikeKeyDate || !matchedDateText) {
-    return keyDates;
-  }
+  if (!looksLikeKeyDate || !matchedDateText) return keyDates;
 
   const parsedDate = new Date(matchedDateText);
-  if (Number.isNaN(parsedDate.getTime())) {
-    return keyDates;
-  }
+  if (Number.isNaN(parsedDate.getTime())) return keyDates;
 
   let dateType = "deadline";
   if (lower.includes("milestone")) dateType = "milestone";
@@ -351,9 +327,7 @@ function extractKeyDatesFromMessage(message) {
   else if (lower.includes("review")) dateType = "review";
 
   let title = text.replace(/[.]+$/, "").trim();
-  if (title.length > 120) {
-    title = title.slice(0, 120).trim();
-  }
+  if (title.length > 120) title = title.slice(0, 120).trim();
 
   keyDates.push({
     date_type: dateType,
@@ -547,6 +521,7 @@ app.get("/api/did-llm", (req, res) => {
 app.get("/api/openai", (req, res) => {
   res.send("OpenAI-compatible base is live.");
 });
+
 app.get("/api/projects", async (req, res) => {
   try {
     const userId = (req.query?.userId || "").toString().trim();
@@ -555,30 +530,15 @@ app.get("/api/projects", async (req, res) => {
       return res.status(400).json({ error: "Missing userId." });
     }
 
-    const dbUser = await prisma.user.findUnique({
-      where: { external_user_id: userId },
+    const projects = await getProjectsForExternalUserId(userId);
+
+    return res.json({
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        updated_at: project.updated_at,
+      })),
     });
-
-    if (!dbUser) {
-      return res.json({ projects: [] });
-    }
-
-    const projects = await prisma.project.findMany({
-      where: {
-        user_id: dbUser.id,
-        status: "active",
-      },
-      orderBy: {
-        updated_at: "desc",
-      },
-      select: {
-        id: true,
-        name: true,
-        updated_at: true,
-      },
-    });
-
-    return res.json({ projects });
   } catch (err) {
     console.error("Project list error:", err);
     return res.status(500).json({ error: "Could not load projects." });
@@ -609,32 +569,6 @@ app.get("/api/debug-schedule/:userId", async (req, res) => {
   } catch (err) {
     console.error("Debug schedule error:", err);
     res.status(500).json({ error: "Debug lookup failed" });
-  }
-});
-
-// ===============================
-//  USER PROJECT LIST
-// ===============================
-app.get("/api/projects", async (req, res) => {
-  try {
-    const userId = (req.query?.userId || "").toString().trim();
-
-    if (!userId) {
-      return res.status(400).json({ error: "Missing userId." });
-    }
-
-    const projects = await getProjectsForExternalUserId(userId);
-
-    return res.json({
-      projects: projects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        updated_at: project.updated_at,
-      })),
-    });
-  } catch (err) {
-    console.error("Project list error:", err);
-    return res.status(500).json({ error: "Could not load projects." });
   }
 });
 
@@ -731,9 +665,7 @@ app.post("/api/openai/chat/completions", async (req, res) => {
         ? [
             {
               role: "system",
-              content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
-
-${latestAnalysis.analysis}`,
+              content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:\n\n${latestAnalysis.analysis}`,
             },
           ]
         : []),
@@ -741,12 +673,7 @@ ${latestAnalysis.analysis}`,
         ? [
             {
               role: "system",
-              content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
-
-${latestAnalysis.raw_schedule_preview}
-
-Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
-If this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
+              content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:\n\n${latestAnalysis.raw_schedule_preview}\n\nUse this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.\nIf this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
             },
           ]
         : []),
@@ -830,9 +757,7 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
         ? [
             {
               role: "system",
-              content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
-
-${latestAnalysis.analysis}`,
+              content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:\n\n${latestAnalysis.analysis}`,
             },
           ]
         : []),
@@ -840,12 +765,7 @@ ${latestAnalysis.analysis}`,
         ? [
             {
               role: "system",
-              content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
-
-${latestAnalysis.raw_schedule_preview}
-
-Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
-If this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
+              content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:\n\n${latestAnalysis.raw_schedule_preview}\n\nUse this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.\nIf this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
             },
           ]
         : []),
@@ -951,9 +871,7 @@ app.post("/api/chat", async (req, res) => {
           ? [
               {
                 role: "system",
-                content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
-
-${latestAnalysis.analysis}`,
+                content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:\n\n${latestAnalysis.analysis}`,
               },
             ]
           : []),
@@ -961,12 +879,7 @@ ${latestAnalysis.analysis}`,
           ? [
               {
                 role: "system",
-                content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:
-
-${latestAnalysis.raw_schedule_preview}
-
-Use this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.
-If this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
+                content: `RAW SCHEDULE CSV PREVIEW FOR THIS USER:\n\n${latestAnalysis.raw_schedule_preview}\n\nUse this raw schedule preview to answer with specific task names, dates, dependencies, and risks whenever possible.\nIf this data is present and the user is asking a schedule-related question, do not say you cannot see the uploaded schedule.`,
               },
             ]
           : []),
@@ -1005,7 +918,6 @@ If this data is present and the user is asking a schedule-related question, do n
     }
 
     const extractedIssues = extractIssuesFromMessage(message);
-    console.log("Extracted issues:", extractedIssues);
     for (const issue of extractedIssues) {
       await prisma.issue.create({
         data: {
@@ -1025,7 +937,6 @@ If this data is present and the user is asking a schedule-related question, do n
     }
 
     const extractedRisks = extractRisksFromMessage(message);
-    console.log("Extracted risks:", extractedRisks);
     for (const risk of extractedRisks) {
       await prisma.risk.create({
         data: {
@@ -1048,7 +959,6 @@ If this data is present and the user is asking a schedule-related question, do n
     }
 
     const extractedKeyDates = extractKeyDatesFromMessage(message);
-    console.log("Extracted key dates:", extractedKeyDates);
     for (const keyDate of extractedKeyDates) {
       await prisma.keyDate.create({
         data: {
@@ -1271,9 +1181,7 @@ app.post("/api/did-llm", async (req, res) => {
           ? [
               {
                 role: "system",
-                content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:
-
-${latestAnalysis.analysis}`,
+                content: `SAVED SCHEDULE ANALYSIS FOR THIS USER:\n\n${latestAnalysis.analysis}`,
               },
             ]
           : []),
