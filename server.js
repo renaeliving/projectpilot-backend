@@ -547,6 +547,43 @@ app.get("/api/did-llm", (req, res) => {
 app.get("/api/openai", (req, res) => {
   res.send("OpenAI-compatible base is live.");
 });
+app.get("/api/projects", async (req, res) => {
+  try {
+    const userId = (req.query?.userId || "").toString().trim();
+
+    if (!userId) {
+      return res.status(400).json({ error: "Missing userId." });
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { external_user_id: userId },
+    });
+
+    if (!dbUser) {
+      return res.json({ projects: [] });
+    }
+
+    const projects = await prisma.project.findMany({
+      where: {
+        user_id: dbUser.id,
+        status: "active",
+      },
+      orderBy: {
+        updated_at: "desc",
+      },
+      select: {
+        id: true,
+        name: true,
+        updated_at: true,
+      },
+    });
+
+    return res.json({ projects });
+  } catch (err) {
+    console.error("Project list error:", err);
+    return res.status(500).json({ error: "Could not load projects." });
+  }
+});
 
 app.get("/api/debug-schedule/:userId", async (req, res) => {
   try {
