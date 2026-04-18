@@ -102,7 +102,6 @@ function extractUserProfileMemories(message) {
   if (!message) return [];
 
   const text = message.trim();
-  const lower = text.toLowerCase();
   const memories = [];
 
   const patterns = [
@@ -808,6 +807,120 @@ app.post("/api/openai/v1/chat/completions", async (req, res) => {
         status: 500,
       },
     });
+  }
+});
+
+// ====================================================================================
+//  TRY RAY DEMO ENDPOINT
+// ====================================================================================
+app.post("/api/try-ray", async (req, res) => {
+  try {
+    const userId = (req.body?.userId || "anonymous").toString().trim();
+    const message = (req.body?.message || "").toString().trim();
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required." });
+    }
+
+    const dbUser = await prisma.user.upsert({
+      where: { external_user_id: userId },
+      update: { last_seen_at: new Date() },
+      create: {
+        external_user_id: userId,
+        last_seen_at: new Date(),
+      },
+    });
+
+    let conversation = await prisma.conversation.findFirst({
+      where: {
+        user_id: dbUser.id,
+        title: "Try Ray conversation",
+        status: "active",
+      },
+      orderBy: { updated_at: "desc" },
+    });
+
+    if (!conversation) {
+      conversation = await prisma.conversation.create({
+        data: {
+          user_id: dbUser.id,
+          project_id: null,
+          title: "Try Ray conversation",
+          status: "active",
+        },
+      });
+    }
+
+    const priorUserMessages = await prisma.message.count({
+      where: {
+        conversation_id: conversation.id,
+        role: "user",
+      },
+    });
+
+    if (priorUserMessages >= 3) {
+      return res.json({
+        reply:
+          "You’ve used your 3 free Try Ray questions. Please sign up for full Ray access to continue.",
+        limitReached: true,
+      });
+    }
+
+    const systemPrompt = `
+You are Ray, an expert project management coach giving a short public preview.
+
+CRITICAL RULES:
+- Be friendly, clear, practical, and concise.
+- Help with project planning, schedules, risks, priorities, and next steps.
+- Keep answers shorter than the full paid experience.
+- Do not mention internal memory, saved uploads, hidden tools, or premium-only capabilities unless the user asks.
+- If asked about file uploads or saved history, explain that those are part of the full version.
+- This is a free public 3-question preview experience.
+`.trim();
+
+    const data = await callOpenAI(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message },
+      ],
+      0.4
+    );
+
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "No response.";
+
+    await prisma.message.create({
+      data: {
+        conversation_id: conversation.id,
+        user_id: dbUser.id,
+        role: "user",
+        content: message,
+      },
+    });
+
+    await prisma.message.create({
+      data: {
+        conversation_id: conversation.id,
+        user_id: dbUser.id,
+        role: "assistant",
+        content: reply,
+      },
+    });
+
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { updated_at: new Date() },
+    });
+
+    const newCount = priorUserMessages + 1;
+
+    return res.json({
+      reply,
+      limitReached: newCount >= 3,
+      remainingQuestions: Math.max(0, 3 - newCount),
+    });
+  } catch (err) {
+    console.error("Try Ray error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
