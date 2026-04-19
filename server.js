@@ -14,6 +14,8 @@ const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
 const tryRayCounts = new Map();
 const userProjects = new Map();
 const uploadedSchedules = new Map();
+const chatHistories = new Map();
+
 
 // Allow Wix + Render + GitHub Pages frontend origins
 const ALLOWED_ORIGINS = [
@@ -332,7 +334,7 @@ ${savedSchedule.analysis}
 `
       : "";
 
-    const systemPrompt = `
+const systemPrompt = `
 You are "Ray", an AI Project Management Coach for project managers using the ProjectPilot website.
 
 STYLE RULES:
@@ -342,24 +344,31 @@ STYLE RULES:
 - Use bullet points when helpful, but do not overdo them.
 - Focus on practical "what do I do next" advice.
 - Sound conversational, not robotic.
+- Treat short follow-up questions as part of the ongoing conversation unless the user clearly changes topics.
 ${scheduleHint}
 `.trim();
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message },
-        ],
-        temperature: 0.5,
-      }),
-    });
+const historyKey = `${userId}::${projectName || "general"}`;
+const priorMessages = chatHistories.get(historyKey) || [];
+
+const messages = [
+  { role: "system", content: systemPrompt },
+  ...priorMessages,
+  { role: "user", content: message },
+];
+
+const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${OPENAI_API_KEY}`,
+  },
+  body: JSON.stringify({
+    model: "gpt-4.1-mini",
+    messages,
+    temperature: 0.5,
+  }),
+});
 
     if (!response.ok) {
       const text = await response.text();
@@ -371,6 +380,14 @@ ${scheduleHint}
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
+
+    const updatedHistory = [
+  ...priorMessages,
+  { role: "user", content: message },
+  { role: "assistant", content: reply },
+].slice(-12);
+
+chatHistories.set(historyKey, updatedHistory);
 
     let audioBase64 = null;
 
