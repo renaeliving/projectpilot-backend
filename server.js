@@ -94,10 +94,10 @@ app.post("/api/try-ray", async (req, res) => {
 
     const currentCount = tryRayCounts.get(userId) || 0;
 
-    if (currentCount >= 3) {
+    if (currentCount >= 10) {
       return res.json({
         reply:
-          "You’ve used your 3 free Try Ray questions. Please sign up for full Ray access to continue.",
+          "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
         limitReached: true,
       });
     }
@@ -146,8 +146,8 @@ STYLE RULES:
 
     return res.json({
       reply,
-      limitReached: newCount >= 3,
-      remainingQuestions: Math.max(0, 3 - newCount),
+      limitReached: newCount >= 10,
+      remainingQuestions: Math.max(0, 10 - newCount),
     });
   } catch (err) {
     console.error("Try Ray error:", err);
