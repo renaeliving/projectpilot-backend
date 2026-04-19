@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
+import multer from "multer";
+import { parse } from "csv-parse/sync";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,8 +10,10 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
 const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
 
-// Simple in-memory store for Try Ray question counts
+// Simple in-memory stores
 const tryRayCounts = new Map();
+const userProjects = new Map();
+const uploadedSchedules = new Map();
 
 // Allow Wix + Render + GitHub Pages frontend origins
 const ALLOWED_ORIGINS = [
@@ -25,7 +29,6 @@ const ALLOWED_ORIGINS = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // allow server-to-server / Postman / curl
       if (!origin) return callback(null, true);
 
       const ok = ALLOWED_ORIGINS.some((allowed) => origin === allowed);
@@ -38,8 +41,36 @@ app.use(
 
 app.use(express.json());
 
+const upload = multer({ storage: multer.memoryStorage() });
+
 app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
+});
+
+// ===============================
+// PROJECT LIST
+// ===============================
+app.get("/api/projects", (req, res) => {
+  try {
+    const userId = (req.query.userId || "").toString().trim();
+
+    if (!userId) {
+      return res.status(400).json({ error: "Missing userId." });
+    }
+
+    const projects = userProjects.get(userId) || [];
+
+    return res.json({
+      projects: projects.map((name) => ({
+        id: name,
+        name,
+        updated_at: new Date().toISOString(),
+      })),
+    });
+  } catch (err) {
+    console.error("Project list error:", err);
+    return res.status(500).json({ error: "Could not load projects." });
+  }
 });
 
 // ===============================
@@ -125,6 +156,127 @@ STYLE RULES:
 });
 
 // ===============================
+// UPLOAD SCHEDULE
+// ===============================
+app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
+  try {
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
+    }
+
+    const userId = (req.body?.userId || "anonymous").toString().trim();
+    const projectName = (req.body?.projectName || "").toString().trim();
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded." });
+    }
+
+    if (!projectName) {
+      return res.status(400).json({ error: "Project name is required." });
+    }
+
+    const csvText = req.file.buffer.toString("utf-8");
+
+    let records;
+    try {
+      records = parse(csvText, {
+        columns: true,
+        skip_empty_lines: true,
+      });
+    } catch (e) {
+      return res.status(400).json({ error: "Could not parse CSV." });
+    }
+
+    if (!records.length) {
+      return res.status(400).json({ error: "CSV contains no data." });
+    }
+
+    const trimmed = records.slice(0, 120);
+    const headers = Object.keys(trimmed[0] || {});
+
+    const compactCsv = [
+      headers.join(","),
+      ...trimmed.map((row) =>
+        headers
+          .map((h) => String(row[h] ?? "").replace(/,/g, ";"))
+          .join(",")
+      ),
+    ].join("\n");
+
+    const systemPrompt = `
+You are Ray, an expert project schedule reviewer.
+
+CRITICAL RULES:
+- Always reference specific task names when available.
+- Always reference dates when available.
+- Always reference dependencies when available.
+- Never be vague.
+
+Identify:
+1. Overall assessment
+2. Specific schedule issues
+3. Top risks
+4. Recommended actions
+
+Use clear headings and practical advice.
+`.trim();
+
+    const userPrompt = `
+Analyze this project schedule CSV:
+
+${compactCsv}
+`.trim();
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error("OpenAI upload analysis error:", text);
+      return res.status(500).json({ error: "OpenAI API error", detail: text });
+    }
+
+    const data = await response.json();
+    const analysis =
+      data?.choices?.[0]?.message?.content?.trim() || "No analysis returned.";
+
+    if (!userProjects.has(userId)) {
+      userProjects.set(userId, []);
+    }
+
+    const existingProjects = userProjects.get(userId);
+    if (!existingProjects.includes(projectName)) {
+      existingProjects.push(projectName);
+      existingProjects.sort((a, b) => a.localeCompare(b));
+    }
+
+    uploadedSchedules.set(`${userId}::${projectName}`, {
+      analysis,
+      raw_schedule_preview: compactCsv,
+      uploaded_at: new Date().toISOString(),
+    });
+
+    return res.json({ analysis });
+  } catch (err) {
+    console.error("Upload error:", err);
+    return res.status(500).json({ error: "Upload failed", detail: err.message });
+  }
+});
+
+// ===============================
 // MAIN RAY CHAT ENDPOINT
 // ===============================
 app.post("/api/chat", async (req, res) => {
@@ -136,16 +288,16 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const body = req.body || {};
-    let message = "";
+    const userId = (body.userId || "anonymous").toString().trim();
+    const projectName = (body.projectName || "").toString().trim();
 
+    let message = "";
     if (typeof body.message === "string") {
       message = body.message.trim();
     } else if (typeof body.text === "string") {
-      // fallback if the frontend ever sends { text: "..." } instead
       message = body.text.trim();
     }
 
-    // If no message, just send a friendly default reply instead of 400
     if (!message) {
       return res.json({
         reply:
@@ -153,6 +305,32 @@ app.post("/api/chat", async (req, res) => {
         audioBase64: null,
       });
     }
+
+    if (projectName) {
+      if (!userProjects.has(userId)) {
+        userProjects.set(userId, []);
+      }
+      const existingProjects = userProjects.get(userId);
+      if (!existingProjects.includes(projectName)) {
+        existingProjects.push(projectName);
+        existingProjects.sort((a, b) => a.localeCompare(b));
+      }
+    }
+
+    const savedSchedule = projectName
+      ? uploadedSchedules.get(`${userId}::${projectName}`)
+      : null;
+
+    const scheduleHint = savedSchedule
+      ? `
+
+The user has uploaded a schedule for project "${projectName}".
+Use this saved schedule analysis only if the question is about schedule, milestones, dates, dependencies, risks, tasks, owners, or timeline details.
+
+Saved schedule analysis:
+${savedSchedule.analysis}
+`
+      : "";
 
     const systemPrompt = `
 You are "Ray", an AI Project Management Coach for project managers using the ProjectPilot website.
@@ -164,6 +342,7 @@ STYLE RULES:
 - Use bullet points when helpful, but do not overdo them.
 - Focus on practical "what do I do next" advice.
 - Sound conversational, not robotic.
+${scheduleHint}
 `.trim();
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -193,9 +372,6 @@ STYLE RULES:
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
 
-    ///////////////////////////////////////////////////////
-    // ELEVENLABS TEXT-TO-SPEECH
-    ///////////////////////////////////////////////////////
     let audioBase64 = null;
 
     if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
