@@ -48,6 +48,46 @@ app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
 });
 
+async function generateElevenLabsAudio(text) {
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
+    return null;
+  }
+
+  try {
+    const ttsRes = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+          Accept: "audio/mpeg",
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: {
+            stability: 0.6,
+            similarity_boost: 0.85,
+          },
+        }),
+      }
+    );
+
+    if (!ttsRes.ok) {
+      console.error("ElevenLabs error:", await ttsRes.text());
+      return null;
+    }
+
+    const arrayBuffer = await ttsRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    return buffer.toString("base64");
+  } catch (e) {
+    console.error("Error calling ElevenLabs:", e);
+    return null;
+  }
+}
+
 // ===============================
 // PROJECT LIST
 // ===============================
@@ -100,6 +140,7 @@ app.post("/api/try-ray", async (req, res) => {
         reply:
           "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
         limitReached: true,
+        audioBase64: null,
       });
     }
 
@@ -111,6 +152,7 @@ STYLE RULES:
 - Help with project risks, priorities, planning, timelines, and next steps.
 - Keep responses useful and easy to understand.
 - If a user asks a short follow-up, assume they are continuing the same topic unless it is clearly a new one.
+- Use markdown when it helps clarity, especially bullet lists and simple tables.
 - This is a short public preview experience.
 `.trim();
 
@@ -141,11 +183,14 @@ STYLE RULES:
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
 
+    const audioBase64 = await generateElevenLabsAudio(reply);
+
     const newCount = currentCount + 1;
     tryRayCounts.set(userId, newCount);
 
     return res.json({
       reply,
+      audioBase64,
       limitReached: newCount >= 10,
       remainingQuestions: Math.max(0, 10 - newCount),
     });
@@ -212,6 +257,7 @@ CRITICAL RULES:
 - Always reference dependencies when available.
 - Never be vague.
 - Write the response like Ray is speaking directly to the user in the chat.
+- Use markdown when it helps clarity, especially headings, bullets, and simple tables.
 
 Identify:
 1. Overall assessment
@@ -288,9 +334,12 @@ ${compactCsv}
 
     chatHistories.set(historyKey, updatedHistory);
 
+    const audioBase64 = await generateElevenLabsAudio(assistantMessage);
+
     return res.json({
       success: true,
       reply: assistantMessage,
+      audioBase64,
       projectName,
       fileName: req.file.originalname || "schedule.csv",
       uploadedAt,
@@ -380,6 +429,7 @@ STYLE RULES:
 - Explain project management concepts in simple language.
 - Use short paragraphs.
 - Use bullet points when helpful, but do not overdo them.
+- Use markdown when it helps clarity, especially bullets, headings, and simple tables.
 - Focus on practical "what do I do next" advice.
 - Sound conversational, not robotic.
 - Treat short follow-up questions as part of the ongoing conversation unless the user clearly changes topics.
@@ -427,49 +477,7 @@ ${scheduleHint}
 
     chatHistories.set(historyKey, updatedHistory);
 
-    let audioBase64 = null;
-
-    if (ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
-      console.log("Calling ElevenLabs TTS with reply length:", reply.length);
-      try {
-        const ttsRes = await fetch(
-          `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-          {
-            method: "POST",
-            headers: {
-              "xi-api-key": ELEVENLABS_API_KEY,
-              "Content-Type": "application/json",
-              Accept: "audio/mpeg",
-            },
-            body: JSON.stringify({
-              text: reply,
-              model_id: "eleven_multilingual_v2",
-              voice_settings: {
-                stability: 0.6,
-                similarity_boost: 0.85,
-              },
-            }),
-          }
-        );
-
-        if (ttsRes.ok) {
-          const arrayBuffer = await ttsRes.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
-          audioBase64 = buffer.toString("base64");
-        } else {
-          console.error("ElevenLabs error:", await ttsRes.text());
-        }
-      } catch (e) {
-        console.error("Error calling ElevenLabs:", e);
-      }
-    } else {
-      console.log(
-        "Skipping ElevenLabs TTS. HasKey:",
-        !!ELEVENLABS_API_KEY,
-        "HasVoice:",
-        !!ELEVENLABS_VOICE_ID
-      );
-    }
+    const audioBase64 = await generateElevenLabsAudio(reply);
 
     return res.json({ reply, audioBase64 });
   } catch (err) {
