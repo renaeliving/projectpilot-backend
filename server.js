@@ -25,9 +25,7 @@ const ALLOWED_ORIGINS = [
   "https://renaeliving-wixsite-com.filesusr.com",
   "https://projectpilot-frontend.onrender.com",
   "https://renaeliving.github.io",
-  "https://app.projectpilot.ai",
-  "http://localhost:3001",
-  "http://127.0.0.1:3001"
+  "https://ray-voice.onrender.com"
 ].filter(Boolean);
 
 app.use(
