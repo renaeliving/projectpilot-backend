@@ -16,7 +16,7 @@ const userProjects = new Map();
 const uploadedSchedules = new Map();
 const chatHistories = new Map();
 
-// Allow Wix + Render + GitHub Pages frontend origins
+// Add your standalone app origin here after you create it
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
   "https://www.projectpilot.ai",
@@ -24,7 +24,10 @@ const ALLOWED_ORIGINS = [
   "https://renaeliving.wixsite.com",
   "https://renaeliving-wixsite-com.filesusr.com",
   "https://projectpilot-frontend.onrender.com",
-  "https://renaeliving.github.io"
+  "https://renaeliving.github.io",
+  "https://app.projectpilot.ai",
+  "http://localhost:3001",
+  "http://127.0.0.1:3001"
 ].filter(Boolean);
 
 app.use(
@@ -42,14 +45,19 @@ app.use(
 
 app.use(express.json());
 
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 25 * 1024 * 1024,
+  },
+});
 
 app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
 });
 
 async function generateElevenLabsAudio(text) {
-  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID || !text) {
     return null;
   }
 
@@ -88,6 +96,149 @@ async function generateElevenLabsAudio(text) {
   }
 }
 
+async function transcribeAudioBuffer(buffer, filename = "voice.webm", mimeType = "audio/webm") {
+  if (!OPENAI_API_KEY) {
+    throw new Error("Missing OPENAI_API_KEY on server.");
+  }
+
+  const form = new FormData();
+  const blob = new Blob([buffer], { type: mimeType || "audio/webm" });
+
+  form.append("file", blob, filename);
+  form.append("model", "gpt-4o-mini-transcribe");
+  form.append("language", "en");
+
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    console.error("OpenAI transcription error:", text);
+    throw new Error("Transcription failed");
+  }
+
+  const data = await response.json();
+  return (data?.text || "").trim();
+}
+
+function ensureProjectSaved(userId, projectName) {
+  if (!projectName) return;
+
+  if (!userProjects.has(userId)) {
+    userProjects.set(userId, []);
+  }
+
+  const existingProjects = userProjects.get(userId);
+  if (!existingProjects.includes(projectName)) {
+    existingProjects.push(projectName);
+    existingProjects.sort((a, b) => a.localeCompare(b));
+  }
+}
+
+function getScheduleHint(userId, projectName) {
+  const savedSchedule = projectName
+    ? uploadedSchedules.get(`${userId}::${projectName}`)
+    : null;
+
+  if (!savedSchedule) return "";
+
+  return `
+
+The user has uploaded a schedule for project "${projectName}".
+
+Use the uploaded schedule naturally as part of the ongoing conversation when the user asks about:
+- schedule quality
+- milestones
+- dates
+- dependencies
+- risks
+- sequencing
+- task ownership
+- timeline concerns
+
+Uploaded file name: ${savedSchedule.fileName || "schedule.csv"}
+Uploaded at: ${savedSchedule.uploaded_at || "unknown"}
+
+Saved schedule analysis:
+${savedSchedule.analysis}
+
+Saved schedule preview:
+${savedSchedule.raw_schedule_preview}
+`;
+}
+
+function getRaySystemPrompt(scheduleHint = "") {
+  return `
+You are "Ray", an AI Project Management Coach for project managers using the ProjectPilot website.
+
+STYLE RULES:
+- Be friendly, clear, warm, and encouraging.
+- Explain project management concepts in simple language.
+- Use short paragraphs.
+- Use bullet points when helpful, but do not overdo them.
+- Use markdown when it helps clarity, especially bullets, headings, and simple tables.
+- Focus on practical "what do I do next" advice.
+- Sound conversational, not robotic.
+- Treat short follow-up questions as part of the ongoing conversation unless the user clearly changes topics.
+${scheduleHint}
+`.trim();
+}
+
+async function runRayChat({ userId, projectName, message }) {
+  ensureProjectSaved(userId, projectName);
+
+  const historyKey = `${userId}::${projectName || "general"}`;
+  const priorMessages = chatHistories.get(historyKey) || [];
+  const scheduleHint = getScheduleHint(userId, projectName);
+
+  const messages = [
+    { role: "system", content: getRaySystemPrompt(scheduleHint) },
+    ...priorMessages,
+    { role: "user", content: message },
+  ];
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      messages,
+      temperature: 0.5,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    console.error("OpenAI chat error:", text);
+    throw new Error("OpenAI chat failed");
+  }
+
+  const data = await response.json();
+  const reply =
+    data?.choices?.[0]?.message?.content?.trim() ||
+    "I’m not sure how to respond to that.";
+
+  const updatedHistory = [
+    ...priorMessages,
+    { role: "user", content: message },
+    { role: "assistant", content: reply },
+  ].slice(-12);
+
+  chatHistories.set(historyKey, updatedHistory);
+
+  const audioBase64 = await generateElevenLabsAudio(reply);
+
+  return { reply, audioBase64 };
+}
+
 // ===============================
 // PROJECT LIST
 // ===============================
@@ -120,9 +271,7 @@ app.get("/api/projects", (req, res) => {
 app.post("/api/try-ray", async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
-      return res
-        .status(500)
-        .json({ error: "Missing OPENAI_API_KEY on server." });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
     }
 
     const body = req.body || {};
@@ -137,8 +286,7 @@ app.post("/api/try-ray", async (req, res) => {
 
     if (currentCount >= 10) {
       return res.json({
-        reply:
-          "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
+        reply: "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
         limitReached: true,
         audioBase64: null,
       });
@@ -201,6 +349,49 @@ STYLE RULES:
 });
 
 // ===============================
+// VOICE CHAT ENDPOINT
+// ===============================
+app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
+  try {
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
+    }
+
+    const userId = (req.body?.userId || "anonymous").toString().trim();
+    const projectName = (req.body?.projectName || "").toString().trim();
+
+    if (!req.file || !req.file.buffer?.length) {
+      return res.status(400).json({ error: "No audio uploaded." });
+    }
+
+    const transcript = await transcribeAudioBuffer(
+      req.file.buffer,
+      req.file.originalname || "voice.webm",
+      req.file.mimetype || "audio/webm"
+    );
+
+    if (!transcript) {
+      return res.status(400).json({ error: "Could not transcribe audio." });
+    }
+
+    const result = await runRayChat({
+      userId,
+      projectName,
+      message: transcript,
+    });
+
+    return res.json({
+      transcript,
+      reply: result.reply,
+      audioBase64: result.audioBase64,
+    });
+  } catch (err) {
+    console.error("Voice chat error:", err);
+    return res.status(500).json({ error: "Voice chat failed", detail: err.message });
+  }
+});
+
+// ===============================
 // UPLOAD SCHEDULE
 // ===============================
 app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
@@ -242,9 +433,7 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
     const compactCsv = [
       headers.join(","),
       ...trimmed.map((row) =>
-        headers
-          .map((h) => String(row[h] ?? "").replace(/,/g, ";"))
-          .join(",")
+        headers.map((h) => String(row[h] ?? "").replace(/,/g, ";")).join(",")
       ),
     ].join("\n");
 
@@ -301,15 +490,7 @@ ${compactCsv}
     const analysis =
       data?.choices?.[0]?.message?.content?.trim() || "No analysis returned.";
 
-    if (!userProjects.has(userId)) {
-      userProjects.set(userId, []);
-    }
-
-    const existingProjects = userProjects.get(userId);
-    if (!existingProjects.includes(projectName)) {
-      existingProjects.push(projectName);
-      existingProjects.sort((a, b) => a.localeCompare(b));
-    }
+    ensureProjectSaved(userId, projectName);
 
     const uploadKey = `${userId}::${projectName}`;
     const uploadedAt = new Date().toISOString();
@@ -324,7 +505,6 @@ ${compactCsv}
 
     const historyKey = `${userId}::${projectName || "general"}`;
     const priorMessages = chatHistories.get(historyKey) || [];
-
     const assistantMessage = `I reviewed your uploaded schedule for "${projectName}".\n\n${analysis}`;
 
     const updatedHistory = [
@@ -356,9 +536,7 @@ ${compactCsv}
 app.post("/api/chat", async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
-      return res
-        .status(500)
-        .json({ error: "Missing OPENAI_API_KEY on server." });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
     }
 
     const body = req.body || {};
@@ -374,115 +552,16 @@ app.post("/api/chat", async (req, res) => {
 
     if (!message) {
       return res.json({
-        reply:
-          "Hi, I’m Ray. Tell me about your project and I’ll help you think through risks, priorities, and next steps.",
+        reply: "Hi, I’m Ray. Tell me about your project and I’ll help you think through risks, priorities, and next steps.",
         audioBase64: null,
       });
     }
 
-    if (projectName) {
-      if (!userProjects.has(userId)) {
-        userProjects.set(userId, []);
-      }
-      const existingProjects = userProjects.get(userId);
-      if (!existingProjects.includes(projectName)) {
-        existingProjects.push(projectName);
-        existingProjects.sort((a, b) => a.localeCompare(b));
-      }
-    }
-
-    const savedSchedule = projectName
-      ? uploadedSchedules.get(`${userId}::${projectName}`)
-      : null;
-
-    const scheduleHint = savedSchedule
-      ? `
-
-The user has uploaded a schedule for project "${projectName}".
-
-Use the uploaded schedule naturally as part of the ongoing conversation when the user asks about:
-- schedule quality
-- milestones
-- dates
-- dependencies
-- risks
-- sequencing
-- task ownership
-- timeline concerns
-
-Uploaded file name: ${savedSchedule.fileName || "schedule.csv"}
-Uploaded at: ${savedSchedule.uploaded_at || "unknown"}
-
-Saved schedule analysis:
-${savedSchedule.analysis}
-
-Saved schedule preview:
-${savedSchedule.raw_schedule_preview}
-`
-      : "";
-
-    const systemPrompt = `
-You are "Ray", an AI Project Management Coach for project managers using the ProjectPilot website.
-
-STYLE RULES:
-- Be friendly, clear, warm, and encouraging.
-- Explain project management concepts in simple language.
-- Use short paragraphs.
-- Use bullet points when helpful, but do not overdo them.
-- Use markdown when it helps clarity, especially bullets, headings, and simple tables.
-- Focus on practical "what do I do next" advice.
-- Sound conversational, not robotic.
-- Treat short follow-up questions as part of the ongoing conversation unless the user clearly changes topics.
-${scheduleHint}
-`.trim();
-
-    const historyKey = `${userId}::${projectName || "general"}`;
-    const priorMessages = chatHistories.get(historyKey) || [];
-
-    const messages = [
-      { role: "system", content: systemPrompt },
-      ...priorMessages,
-      { role: "user", content: message },
-    ];
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        messages,
-        temperature: 0.5,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      console.error("OpenAI API error:", text);
-      return res.status(500).json({ error: "OpenAI API error", detail: text });
-    }
-
-    const data = await response.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      "I’m not sure how to respond to that.";
-
-    const updatedHistory = [
-      ...priorMessages,
-      { role: "user", content: message },
-      { role: "assistant", content: reply },
-    ].slice(-12);
-
-    chatHistories.set(historyKey, updatedHistory);
-
-    const audioBase64 = await generateElevenLabsAudio(reply);
-
-    return res.json({ reply, audioBase64 });
+    const result = await runRayChat({ userId, projectName, message });
+    return res.json(result);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Server error", detail: err.message });
+    return res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
 
