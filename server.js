@@ -16,7 +16,6 @@ const userProjects = new Map();
 const uploadedSchedules = new Map();
 const chatHistories = new Map();
 
-
 // Allow Wix + Render + GitHub Pages frontend origins
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
@@ -109,7 +108,6 @@ You are Ray, a friendly AI project coach giving a short public preview.
 
 STYLE RULES:
 - Be warm, clear, practical, and conversational.
-- Answer like a real coach, not like a stiff help desk.
 - Help with project risks, priorities, planning, timelines, and next steps.
 - Keep responses useful and easy to understand.
 - If a user asks a short follow-up, assume they are continuing the same topic unless it is clearly a new one.
@@ -213,6 +211,7 @@ CRITICAL RULES:
 - Always reference dates when available.
 - Always reference dependencies when available.
 - Never be vague.
+- Write the response like Ray is speaking directly to the user in the chat.
 
 Identify:
 1. Overall assessment
@@ -220,11 +219,12 @@ Identify:
 3. Top risks
 4. Recommended actions
 
+End with 2-3 suggestions for what the user could ask next.
 Use clear headings and practical advice.
 `.trim();
 
     const userPrompt = `
-Analyze this project schedule CSV:
+Analyze this project schedule CSV for project "${projectName}":
 
 ${compactCsv}
 `.trim();
@@ -265,13 +265,36 @@ ${compactCsv}
       existingProjects.sort((a, b) => a.localeCompare(b));
     }
 
-    uploadedSchedules.set(`${userId}::${projectName}`, {
+    const uploadKey = `${userId}::${projectName}`;
+    const uploadedAt = new Date().toISOString();
+
+    uploadedSchedules.set(uploadKey, {
       analysis,
       raw_schedule_preview: compactCsv,
-      uploaded_at: new Date().toISOString(),
+      records: trimmed,
+      fileName: req.file.originalname || "schedule.csv",
+      uploaded_at: uploadedAt,
     });
 
-    return res.json({ analysis });
+    const historyKey = `${userId}::${projectName || "general"}`;
+    const priorMessages = chatHistories.get(historyKey) || [];
+
+    const assistantMessage = `I reviewed your uploaded schedule for "${projectName}".\n\n${analysis}`;
+
+    const updatedHistory = [
+      ...priorMessages,
+      { role: "assistant", content: assistantMessage },
+    ].slice(-12);
+
+    chatHistories.set(historyKey, updatedHistory);
+
+    return res.json({
+      success: true,
+      reply: assistantMessage,
+      projectName,
+      fileName: req.file.originalname || "schedule.csv",
+      uploadedAt,
+    });
   } catch (err) {
     console.error("Upload error:", err);
     return res.status(500).json({ error: "Upload failed", detail: err.message });
@@ -327,14 +350,29 @@ app.post("/api/chat", async (req, res) => {
       ? `
 
 The user has uploaded a schedule for project "${projectName}".
-Use this saved schedule analysis only if the question is about schedule, milestones, dates, dependencies, risks, tasks, owners, or timeline details.
+
+Use the uploaded schedule naturally as part of the ongoing conversation when the user asks about:
+- schedule quality
+- milestones
+- dates
+- dependencies
+- risks
+- sequencing
+- task ownership
+- timeline concerns
+
+Uploaded file name: ${savedSchedule.fileName || "schedule.csv"}
+Uploaded at: ${savedSchedule.uploaded_at || "unknown"}
 
 Saved schedule analysis:
 ${savedSchedule.analysis}
+
+Saved schedule preview:
+${savedSchedule.raw_schedule_preview}
 `
       : "";
 
-const systemPrompt = `
+    const systemPrompt = `
 You are "Ray", an AI Project Management Coach for project managers using the ProjectPilot website.
 
 STYLE RULES:
@@ -348,27 +386,27 @@ STYLE RULES:
 ${scheduleHint}
 `.trim();
 
-const historyKey = `${userId}::${projectName || "general"}`;
-const priorMessages = chatHistories.get(historyKey) || [];
+    const historyKey = `${userId}::${projectName || "general"}`;
+    const priorMessages = chatHistories.get(historyKey) || [];
 
-const messages = [
-  { role: "system", content: systemPrompt },
-  ...priorMessages,
-  { role: "user", content: message },
-];
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...priorMessages,
+      { role: "user", content: message },
+    ];
 
-const response = await fetch("https://api.openai.com/v1/chat/completions", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${OPENAI_API_KEY}`,
-  },
-  body: JSON.stringify({
-    model: "gpt-4.1-mini",
-    messages,
-    temperature: 0.5,
-  }),
-});
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        messages,
+        temperature: 0.5,
+      }),
+    });
 
     if (!response.ok) {
       const text = await response.text();
@@ -382,12 +420,12 @@ const response = await fetch("https://api.openai.com/v1/chat/completions", {
       "I’m not sure how to respond to that.";
 
     const updatedHistory = [
-  ...priorMessages,
-  { role: "user", content: message },
-  { role: "assistant", content: reply },
-].slice(-12);
+      ...priorMessages,
+      { role: "user", content: message },
+      { role: "assistant", content: reply },
+    ].slice(-12);
 
-chatHistories.set(historyKey, updatedHistory);
+    chatHistories.set(historyKey, updatedHistory);
 
     let audioBase64 = null;
 
