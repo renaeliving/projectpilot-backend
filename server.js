@@ -92,10 +92,11 @@ async function generateElevenLabsAudio(text) {
         },
         body: JSON.stringify({
           text: speechText,
-          model_id: "eleven_multilingual_v2",
+          model_id: "eleven_flash_v2_5",
           voice_settings: {
-            stability: 0.5,
+            stability: 0.4,
             similarity_boost: 0.85,
+            speed: 1.18,
           },
         }),
       }
@@ -235,7 +236,7 @@ async function runRayChat({ userId, projectName, message, includeAudio = true, v
       model: "gpt-4.1-mini",
       messages,
       temperature: voiceMode ? 0.35 : 0.5,
-      max_tokens: voiceMode ? 140 : 500,
+      max_tokens: voiceMode ? 90 : 500,
     }),
   });
 
@@ -340,7 +341,7 @@ app.post("/api/try-ray", async (req, res) => {
           { role: "user", content: message },
         ],
         temperature: voiceMode ? 0.35 : 0.5,
-        max_tokens: voiceMode ? 140 : 350,
+        max_tokens: voiceMode ? 90 : 350,
       }),
     });
 
