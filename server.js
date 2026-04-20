@@ -25,6 +25,7 @@ const ALLOWED_ORIGINS = [
   "https://projectpilot-frontend.onrender.com",
   "https://renaeliving.github.io",
   "https://ray-voice.onrender.com"
+  "https://ray-app.onrender.com",
 ].filter(Boolean);
 
 app.use(
