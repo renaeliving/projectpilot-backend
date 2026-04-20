@@ -16,7 +16,6 @@ const userProjects = new Map();
 const uploadedSchedules = new Map();
 const chatHistories = new Map();
 
-// Add your standalone app origin here after you create it
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
   "https://www.projectpilot.ai",
@@ -54,8 +53,30 @@ app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
 });
 
+function cleanTextForSpeech(text) {
+  return String(text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/\|/g, " ")
+    .replace(/\n+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 async function generateElevenLabsAudio(text) {
   if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID || !text) {
+    return null;
+  }
+
+  const speechText = cleanTextForSpeech(text);
+
+  if (!speechText) {
     return null;
   }
 
@@ -70,10 +91,10 @@ async function generateElevenLabsAudio(text) {
           Accept: "audio/mpeg",
         },
         body: JSON.stringify({
-          text,
+          text: speechText,
           model_id: "eleven_multilingual_v2",
           voice_settings: {
-            stability: 0.6,
+            stability: 0.5,
             similarity_boost: 0.85,
           },
         }),
@@ -170,7 +191,9 @@ ${savedSchedule.raw_schedule_preview}
 `;
 }
 
-function getRaySystemPrompt(scheduleHint = "") {
+function getRaySystemPrompt(scheduleHint = "", options = {}) {
+  const { voiceMode = false, previewMode = false } = options;
+
   return `
 You are "Ray", an AI Project Management Coach for project managers using the ProjectPilot website.
 
@@ -183,11 +206,13 @@ STYLE RULES:
 - Focus on practical "what do I do next" advice.
 - Sound conversational, not robotic.
 - Treat short follow-up questions as part of the ongoing conversation unless the user clearly changes topics.
-${scheduleHint}
+${previewMode ? "- This is a short public preview experience.\n" : ""}${voiceMode ? `- This is voice mode. Keep answers short and natural to say aloud.
+- Default to 1 or 2 short sentences unless the user explicitly asks for detail.
+- For very simple questions, answer very briefly.\n` : ""}${scheduleHint}
 `.trim();
 }
 
-async function runRayChat({ userId, projectName, message }) {
+async function runRayChat({ userId, projectName, message, includeAudio = true, voiceMode = false }) {
   ensureProjectSaved(userId, projectName);
 
   const historyKey = `${userId}::${projectName || "general"}`;
@@ -195,7 +220,7 @@ async function runRayChat({ userId, projectName, message }) {
   const scheduleHint = getScheduleHint(userId, projectName);
 
   const messages = [
-    { role: "system", content: getRaySystemPrompt(scheduleHint) },
+    { role: "system", content: getRaySystemPrompt(scheduleHint, { voiceMode }) },
     ...priorMessages,
     { role: "user", content: message },
   ];
@@ -209,7 +234,8 @@ async function runRayChat({ userId, projectName, message }) {
     body: JSON.stringify({
       model: "gpt-4.1-mini",
       messages,
-      temperature: 0.5,
+      temperature: voiceMode ? 0.35 : 0.5,
+      max_tokens: voiceMode ? 140 : 500,
     }),
   });
 
@@ -232,9 +258,13 @@ async function runRayChat({ userId, projectName, message }) {
 
   chatHistories.set(historyKey, updatedHistory);
 
-  const audioBase64 = await generateElevenLabsAudio(reply);
+  const result = { reply };
 
-  return { reply, audioBase64 };
+  if (includeAudio) {
+    result.audioBase64 = await generateElevenLabsAudio(reply);
+  }
+
+  return result;
 }
 
 // ===============================
@@ -281,6 +311,8 @@ app.post("/api/try-ray", async (req, res) => {
     }
 
     const currentCount = tryRayCounts.get(userId) || 0;
+    const includeAudio = body.includeAudio !== false;
+    const voiceMode = !!body.voiceMode;
 
     if (currentCount >= 10) {
       return res.json({
@@ -290,17 +322,10 @@ app.post("/api/try-ray", async (req, res) => {
       });
     }
 
-    const systemPrompt = `
-You are Ray, a friendly AI project coach giving a short public preview.
-
-STYLE RULES:
-- Be warm, clear, practical, and conversational.
-- Help with project risks, priorities, planning, timelines, and next steps.
-- Keep responses useful and easy to understand.
-- If a user asks a short follow-up, assume they are continuing the same topic unless it is clearly a new one.
-- Use markdown when it helps clarity, especially bullet lists and simple tables.
-- This is a short public preview experience.
-`.trim();
+    const systemPrompt = getRaySystemPrompt("", {
+      previewMode: true,
+      voiceMode,
+    });
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -314,7 +339,8 @@ STYLE RULES:
           { role: "system", content: systemPrompt },
           { role: "user", content: message },
         ],
-        temperature: 0.5,
+        temperature: voiceMode ? 0.35 : 0.5,
+        max_tokens: voiceMode ? 140 : 350,
       }),
     });
 
@@ -329,10 +355,13 @@ STYLE RULES:
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
 
-    const audioBase64 = await generateElevenLabsAudio(reply);
-
     const newCount = currentCount + 1;
     tryRayCounts.set(userId, newCount);
+
+    let audioBase64 = null;
+    if (includeAudio) {
+      audioBase64 = await generateElevenLabsAudio(reply);
+    }
 
     return res.json({
       reply,
@@ -343,6 +372,25 @@ STYLE RULES:
   } catch (err) {
     console.error("Try Ray error:", err);
     return res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// SPEAK ONLY ENDPOINT
+// ===============================
+app.post("/api/speak", async (req, res) => {
+  try {
+    const text = (req.body?.text || "").toString().trim();
+
+    if (!text) {
+      return res.status(400).json({ error: "Text is required." });
+    }
+
+    const audioBase64 = await generateElevenLabsAudio(text);
+    return res.json({ audioBase64 });
+  } catch (err) {
+    console.error("Speak error:", err);
+    return res.status(500).json({ error: "Speak failed", detail: err.message });
   }
 });
 
@@ -376,12 +424,13 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       userId,
       projectName,
       message: transcript,
+      includeAudio: false,
+      voiceMode: true,
     });
 
     return res.json({
       transcript,
       reply: result.reply,
-      audioBase64: result.audioBase64,
     });
   } catch (err) {
     console.error("Voice chat error:", err);
@@ -548,6 +597,9 @@ app.post("/api/chat", async (req, res) => {
       message = body.text.trim();
     }
 
+    const includeAudio = body.includeAudio !== false;
+    const voiceMode = !!body.voiceMode;
+
     if (!message) {
       return res.json({
         reply: "Hi, I’m Ray. Tell me about your project and I’ll help you think through risks, priorities, and next steps.",
@@ -555,7 +607,14 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    const result = await runRayChat({ userId, projectName, message });
+    const result = await runRayChat({
+      userId,
+      projectName,
+      message,
+      includeAudio,
+      voiceMode,
+    });
+
     return res.json(result);
   } catch (err) {
     console.error(err);
