@@ -24,7 +24,7 @@ const ALLOWED_ORIGINS = [
   "https://renaeliving-wixsite-com.filesusr.com",
   "https://projectpilot-frontend.onrender.com",
   "https://renaeliving.github.io",
-  "https://ray-voice.onrender.com"
+  "https://ray-voice.onrender.com",
   "https://ray-app.onrender.com",
 ].filter(Boolean);
 
