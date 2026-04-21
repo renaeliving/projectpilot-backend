@@ -253,3 +253,17 @@ model Project {
   @@unique([user_id, name], map: "projects_user_id_name_key")
   @@map("projects")
 }
+model Project {
+  id          String   @id @default(cuid())
+  user_id     String
+  name        String
+  description String?
+  status      String?  @default("active")
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, name])
+  @@index([user_id])
+}
