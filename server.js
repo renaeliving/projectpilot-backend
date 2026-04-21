@@ -305,6 +305,97 @@ app.post("/api/try-ray", async (req, res) => {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
     }
 
+    app.post("/api/try-ray-voice", upload.single("audio"), async (req, res) => {
+  try {
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
+    }
+
+    const userId = (req.body?.userId || "anonymous").toString().trim();
+
+    const currentCount = tryRayCounts.get(userId) || 0;
+    if (currentCount >= 10) {
+      return res.json({
+        reply: "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
+        transcript: "",
+        limitReached: true,
+        remainingQuestions: 0,
+      });
+    }
+
+    if (!req.file || !req.file.buffer?.length) {
+      return res.status(400).json({ error: "No audio uploaded." });
+    }
+
+    const transcript = await transcribeAudioBuffer(
+      req.file.buffer,
+      req.file.originalname || "voice.webm",
+      req.file.mimetype || "audio/webm"
+    );
+
+    if (!transcript) {
+      return res.status(400).json({ error: "Could not transcribe audio." });
+    }
+
+    const systemPrompt = `
+You are Ray, a friendly AI project coach giving a short public preview.
+
+STYLE RULES:
+- Be warm, clear, practical, and conversational.
+- Help with project risks, priorities, planning, timelines, and next steps.
+- Keep responses useful and easy to understand.
+- If a user asks a short follow-up, assume they are continuing the same topic unless it is clearly a new one.
+- Use markdown when it helps clarity, especially bullet lists and simple tables.
+- This is voice mode.
+- Keep answers short and natural to say aloud.
+- Default to 1 or 2 short sentences unless the user explicitly asks for detail.
+- For very simple questions, answer very briefly.
+- This is a short public preview experience.
+`.trim();
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: transcript },
+        ],
+        temperature: 0.35,
+        max_tokens: 90,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error("OpenAI API error:", text);
+      return res.status(500).json({ error: "OpenAI API error", detail: text });
+    }
+
+    const data = await response.json();
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "I’m not sure how to respond to that.";
+
+    const newCount = currentCount + 1;
+    tryRayCounts.set(userId, newCount);
+
+    return res.json({
+      transcript,
+      reply,
+      limitReached: newCount >= 10,
+      remainingQuestions: Math.max(0, 10 - newCount),
+    });
+  } catch (err) {
+    console.error("Try Ray voice error:", err);
+    return res.status(500).json({ error: "Try Ray voice failed", detail: err.message });
+  }
+});
+
     const body = req.body || {};
     const userId = (body.userId || "anonymous").toString().trim();
     const message = (body.message || "").toString().trim();
