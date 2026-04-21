@@ -912,12 +912,6 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     const userId = (req.body?.userId || "anonymous").toString().trim();
     const projectName = (req.body?.projectName || "").toString().trim();
 
-    console.log("/api/voice-chat", {
-      userId,
-      projectName,
-      fileName: req.file?.originalname,
-    });
-
     if (!req.file || !req.file.buffer?.length) {
       return res.status(400).json({ error: "No audio uploaded." });
     }
@@ -967,12 +961,6 @@ app.post("/api/chat", async (req, res) => {
       message = body.text.trim();
     }
 
-    console.log("/api/chat", {
-      userId,
-      projectName,
-      messagePreview: message?.slice(0, 80),
-    });
-
     const includeAudio = body.includeAudio !== false;
     const voiceMode = !!body.voiceMode;
 
@@ -1006,12 +994,6 @@ app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => 
 
     const externalUserId = (req.body?.userId || "anonymous").toString().trim();
     const projectName = (req.body?.projectName || "").toString().trim();
-
-    console.log("/api/upload-schedule", {
-      externalUserId,
-      projectName,
-      fileName: req.file?.originalname,
-    });
 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded." });
