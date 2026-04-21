@@ -317,7 +317,7 @@ app.post("/api/try-ray", async (req, res) => {
     const includeAudio = body.includeAudio !== false;
     const voiceMode = !!body.voiceMode;
 
-    if (currentCount >= 10) {
+    if (currentCount >= 30) {
       return res.json({
         reply: "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
         limitReached: true,
@@ -370,7 +370,7 @@ app.post("/api/try-ray", async (req, res) => {
       reply,
       audioBase64,
       limitReached: newCount >= 10,
-      remainingQuestions: Math.max(0, 10 - newCount),
+      remainingQuestions: Math.max(0, 30 - newCount),
     });
   } catch (err) {
     console.error("Try Ray error:", err);
