@@ -10,6 +10,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
 const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
 
+const TRY_RAY_LIMIT = 30;
+
 // Simple in-memory stores
 const tryRayCounts = new Map();
 const userProjects = new Map();
@@ -305,7 +307,84 @@ app.post("/api/try-ray", async (req, res) => {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
     }
 
-    app.post("/api/try-ray-voice", upload.single("audio"), async (req, res) => {
+    const body = req.body || {};
+    const userId = (body.userId || "anonymous").toString().trim();
+    const message = (body.message || "").toString().trim();
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required." });
+    }
+
+    const currentCount = tryRayCounts.get(userId) || 0;
+    const includeAudio = body.includeAudio !== false;
+    const voiceMode = !!body.voiceMode;
+
+    if (currentCount >= TRY_RAY_LIMIT) {
+      return res.json({
+        reply: `You’ve used your ${TRY_RAY_LIMIT} free Try Ray questions. Please sign up for full Ray access to continue.`,
+        limitReached: true,
+        audioBase64: null,
+        remainingQuestions: 0,
+      });
+    }
+
+    const systemPrompt = getRaySystemPrompt("", {
+      previewMode: true,
+      voiceMode,
+    });
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: message },
+        ],
+        temperature: voiceMode ? 0.35 : 0.5,
+        max_tokens: voiceMode ? 90 : 350,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error("OpenAI API error:", text);
+      return res.status(500).json({ error: "OpenAI API error", detail: text });
+    }
+
+    const data = await response.json();
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "I’m not sure how to respond to that.";
+
+    const newCount = currentCount + 1;
+    tryRayCounts.set(userId, newCount);
+
+    let audioBase64 = null;
+    if (includeAudio) {
+      audioBase64 = await generateElevenLabsAudio(reply);
+    }
+
+    return res.json({
+      reply,
+      audioBase64,
+      limitReached: newCount >= TRY_RAY_LIMIT,
+      remainingQuestions: Math.max(0, TRY_RAY_LIMIT - newCount),
+    });
+  } catch (err) {
+    console.error("Try Ray error:", err);
+    return res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// TRY RAY VOICE ENDPOINT
+// ===============================
+app.post("/api/try-ray-voice", upload.single("audio"), async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
@@ -314,9 +393,9 @@ app.post("/api/try-ray", async (req, res) => {
     const userId = (req.body?.userId || "anonymous").toString().trim();
 
     const currentCount = tryRayCounts.get(userId) || 0;
-    if (currentCount >= 10) {
+    if (currentCount >= TRY_RAY_LIMIT) {
       return res.json({
-        reply: "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
+        reply: `You’ve used your ${TRY_RAY_LIMIT} free Try Ray questions. Please sign up for full Ray access to continue.`,
         transcript: "",
         limitReached: true,
         remainingQuestions: 0,
@@ -387,85 +466,12 @@ STYLE RULES:
     return res.json({
       transcript,
       reply,
-      limitReached: newCount >= 10,
-      remainingQuestions: Math.max(0, 10 - newCount),
+      limitReached: newCount >= TRY_RAY_LIMIT,
+      remainingQuestions: Math.max(0, TRY_RAY_LIMIT - newCount),
     });
   } catch (err) {
     console.error("Try Ray voice error:", err);
     return res.status(500).json({ error: "Try Ray voice failed", detail: err.message });
-  }
-});
-
-    const body = req.body || {};
-    const userId = (body.userId || "anonymous").toString().trim();
-    const message = (body.message || "").toString().trim();
-
-    if (!message) {
-      return res.status(400).json({ error: "Message is required." });
-    }
-
-    const currentCount = tryRayCounts.get(userId) || 0;
-    const includeAudio = body.includeAudio !== false;
-    const voiceMode = !!body.voiceMode;
-
-    if (currentCount >= 30) {
-      return res.json({
-        reply: "You’ve used your 10 free Try Ray questions. Please sign up for full Ray access to continue.",
-        limitReached: true,
-        audioBase64: null,
-      });
-    }
-
-    const systemPrompt = getRaySystemPrompt("", {
-      previewMode: true,
-      voiceMode,
-    });
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message },
-        ],
-        temperature: voiceMode ? 0.35 : 0.5,
-        max_tokens: voiceMode ? 90 : 350,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      console.error("OpenAI API error:", text);
-      return res.status(500).json({ error: "OpenAI API error", detail: text });
-    }
-
-    const data = await response.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      "I’m not sure how to respond to that.";
-
-    const newCount = currentCount + 1;
-    tryRayCounts.set(userId, newCount);
-
-    let audioBase64 = null;
-    if (includeAudio) {
-      audioBase64 = await generateElevenLabsAudio(reply);
-    }
-
-    return res.json({
-      reply,
-      audioBase64,
-      limitReached: newCount >= 10,
-      remainingQuestions: Math.max(0, 30 - newCount),
-    });
-  } catch (err) {
-    console.error("Try Ray error:", err);
-    return res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
 
