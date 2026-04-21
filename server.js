@@ -3,20 +3,18 @@ import cors from "cors";
 import fetch from "node-fetch";
 import multer from "multer";
 import { parse } from "csv-parse/sync";
+import { prisma } from "./prismaClient.js";
+import { supabaseAdmin } from "./supabaseClient.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
 const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
-
+const DID_CUSTOM_LLM_KEY = process.env.DID_CUSTOM_LLM_KEY || "ray-secret-key-111";
 const TRY_RAY_LIMIT = 30;
 
-// Simple in-memory stores
 const tryRayCounts = new Map();
-const userProjects = new Map();
-const uploadedSchedules = new Map();
-const chatHistories = new Map();
 
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
@@ -35,27 +33,44 @@ app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-
       const ok = ALLOWED_ORIGINS.some((allowed) => origin === allowed);
       if (ok) return callback(null, true);
-
       return callback(new Error("Not allowed by CORS: " + origin));
     },
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "4mb" }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 25 * 1024 * 1024,
-  },
+  limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-app.get("/", (req, res) => {
-  res.send("ProjectPilot backend is running.");
-});
+function getInboundApiKey(req) {
+  const xApiKey = req.headers["x-api-key"];
+  if (xApiKey) return xApiKey;
+  const auth = req.headers["authorization"];
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) {
+    return auth.slice("Bearer ".length).trim();
+  }
+  return null;
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part?.text) return part.text;
+        return JSON.stringify(part);
+      })
+      .join("\n");
+  }
+  if (content == null) return "";
+  return String(content);
+}
 
 function cleanTextForSpeech(text) {
   return String(text || "")
@@ -73,16 +88,44 @@ function cleanTextForSpeech(text) {
     .trim();
 }
 
+function isScheduleRelatedQuestion(message) {
+  const text = (message || "").toLowerCase();
+  const keywords = [
+    "schedule", "timeline", "milestone", "milestones", "dependency", "dependencies",
+    "predecessor", "successor", "critical path", "task", "tasks", "owner", "resource",
+    "start date", "finish date", "due date", "deadline", "slip", "delay", "gantt",
+    "sequence", "sequencing", "csv", "upload", "plan"
+  ];
+  return keywords.some((k) => text.includes(k));
+}
+
+async function callOpenAI(messages, temperature = 0.4, max_tokens = 500) {
+  const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      temperature,
+      max_tokens,
+      messages,
+    }),
+  });
+
+  if (!aiResponse.ok) {
+    const text = await aiResponse.text();
+    throw new Error(`OpenAI error: ${text}`);
+  }
+
+  return aiResponse.json();
+}
+
 async function generateElevenLabsAudio(text) {
-  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID || !text) {
-    return null;
-  }
-
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID || !text) return null;
   const speechText = cleanTextForSpeech(text);
-
-  if (!speechText) {
-    return null;
-  }
+  if (!speechText) return null;
 
   try {
     const ttsRes = await fetch(
@@ -112,8 +155,7 @@ async function generateElevenLabsAudio(text) {
     }
 
     const arrayBuffer = await ttsRes.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    return buffer.toString("base64");
+    return Buffer.from(arrayBuffer).toString("base64");
   } catch (e) {
     console.error("Error calling ElevenLabs:", e);
     return null;
@@ -121,22 +163,17 @@ async function generateElevenLabsAudio(text) {
 }
 
 async function transcribeAudioBuffer(buffer, filename = "voice.webm", mimeType = "audio/webm") {
-  if (!OPENAI_API_KEY) {
-    throw new Error("Missing OPENAI_API_KEY on server.");
-  }
+  if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY on server.");
 
   const form = new FormData();
   const blob = new Blob([buffer], { type: mimeType || "audio/webm" });
-
   form.append("file", blob, filename);
   form.append("model", "gpt-4o-mini-transcribe");
   form.append("language", "en");
 
   const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: form,
   });
 
@@ -150,54 +187,264 @@ async function transcribeAudioBuffer(buffer, filename = "voice.webm", mimeType =
   return (data?.text || "").trim();
 }
 
-function ensureProjectSaved(userId, projectName) {
-  if (!projectName) return;
+async function upsertDbUser(externalUserId) {
+  return prisma.user.upsert({
+    where: { external_user_id: externalUserId },
+    update: { last_seen_at: new Date() },
+    create: { external_user_id: externalUserId, last_seen_at: new Date() },
+  });
+}
 
-  if (!userProjects.has(userId)) {
-    userProjects.set(userId, []);
+function conversationTitleForProject(projectName) {
+  return (projectName || "").trim() || "General";
+}
+
+async function getOrCreateConversation(dbUserId, projectName) {
+  const title = conversationTitleForProject(projectName);
+  let conversation = await prisma.conversation.findFirst({
+    where: { user_id: dbUserId, title, status: "active" },
+    orderBy: { updated_at: "desc" },
+  });
+
+  if (!conversation) {
+    conversation = await prisma.conversation.create({
+      data: { user_id: dbUserId, title, status: "active" },
+    });
   }
 
-  const existingProjects = userProjects.get(userId);
-  if (!existingProjects.includes(projectName)) {
-    existingProjects.push(projectName);
-    existingProjects.sort((a, b) => a.localeCompare(b));
+  return conversation;
+}
+
+async function getLatestScheduleAnalysis(dbUserId, conversationId) {
+  let latestAnalysis = null;
+  if (conversationId) {
+    latestAnalysis = await prisma.scheduleAnalysis.findFirst({
+      where: { user_id: dbUserId, conversation_id: conversationId },
+      orderBy: { created_at: "desc" },
+      include: { uploaded_file: true },
+    });
+  }
+  if (!latestAnalysis) {
+    latestAnalysis = await prisma.scheduleAnalysis.findFirst({
+      where: { user_id: dbUserId },
+      orderBy: { created_at: "desc" },
+      include: { uploaded_file: true },
+    });
+  }
+  return latestAnalysis;
+}
+
+async function getRecentMessages(conversationId, limit = 12) {
+  const rows = await prisma.message.findMany({
+    where: { conversation_id: conversationId },
+    orderBy: { created_at: "asc" },
+    take: limit,
+  });
+  return rows.map((m) => ({ role: m.role, content: m.content }));
+}
+
+async function saveMessage(conversationId, userId, role, content) {
+  await prisma.message.create({
+    data: {
+      conversation_id: conversationId,
+      user_id: userId,
+      role,
+      content,
+    },
+  });
+
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { updated_at: new Date() },
+  });
+}
+
+async function upsertUserProfileMemory(dbUserId, message) {
+  const text = (message || "").trim();
+  if (!text) return;
+
+  const patterns = [
+    { regex: /i prefer ([^.\n]+)/i, type: "preference", keyPrefix: "prefer" },
+    { regex: /i like ([^.\n]+)/i, type: "preference", keyPrefix: "like" },
+    { regex: /i dislike ([^.\n]+)/i, type: "preference", keyPrefix: "dislike" },
+    { regex: /my role is ([^.\n]+)/i, type: "profile", keyPrefix: "role" },
+    { regex: /i work best ([^.\n]+)/i, type: "working_style", keyPrefix: "working_style" },
+  ];
+
+  for (const p of patterns) {
+    const match = text.match(p.regex);
+    if (!match) continue;
+    const value = match[1].trim();
+    const key = `${p.keyPrefix}:${value.toLowerCase().slice(0, 80)}`;
+    const existing = await prisma.userProfileMemory.findFirst({
+      where: { user_id: dbUserId, memory_key: key },
+    });
+    if (existing) {
+      await prisma.userProfileMemory.update({
+        where: { id: existing.id },
+        data: { memory_value: value, updated_at: new Date() },
+      });
+    } else {
+      await prisma.userProfileMemory.create({
+        data: {
+          user_id: dbUserId,
+          memory_type: p.type,
+          memory_key: key,
+          memory_value: value,
+          source: "chat",
+        },
+      });
+    }
   }
 }
 
-function getScheduleHint(userId, projectName) {
-  const savedSchedule = projectName
-    ? uploadedSchedules.get(`${userId}::${projectName}`)
-    : null;
-
-  if (!savedSchedule) return "";
-
-  return `
-
-The user has uploaded a schedule for project "${projectName}".
-
-Use the uploaded schedule naturally as part of the ongoing conversation when the user asks about:
-- schedule quality
-- milestones
-- dates
-- dependencies
-- risks
-- sequencing
-- task ownership
-- timeline concerns
-
-Uploaded file name: ${savedSchedule.fileName || "schedule.csv"}
-Uploaded at: ${savedSchedule.uploaded_at || "unknown"}
-
-Saved schedule analysis:
-${savedSchedule.analysis}
-
-Saved schedule preview:
-${savedSchedule.raw_schedule_preview}
-`;
+function extractIssueTitle(message) {
+  const text = (message || "").trim();
+  const patterns = [
+    /(?:blocked by|blocked on)\s+(.+)/i,
+    /waiting for\s+(.+)/i,
+    /delayed because\s+(.+)/i,
+    /issue[:\-]?\s+(.+)/i,
+    /problem[:\-]?\s+(.+)/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[1].trim().slice(0, 180);
+  }
+  if (/blocked|delay|issue|problem|not ready|stuck/i.test(text)) {
+    return text.slice(0, 180);
+  }
+  return null;
 }
 
-function getRaySystemPrompt(scheduleHint = "", options = {}) {
-  const { voiceMode = false, previewMode = false } = options;
+function extractRiskTitle(message) {
+  const text = (message || "").trim();
+  const patterns = [
+    /risk (?:is|that)?\s+(.+)/i,
+    /worried (?:that )?(.+)/i,
+    /concerned (?:that )?(.+)/i,
+    /might\s+(.+)/i,
+    /could\s+(.+)/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[1].trim().slice(0, 180);
+  }
+  if (/risk|worried|concern|could|might|slip/i.test(text)) {
+    return text.slice(0, 180);
+  }
+  return null;
+}
+
+function extractDateInfo(message) {
+  const text = (message || "");
+  const match = text.match(/(?:due by|due on|by|on|meeting on|milestone on)\s+([A-Z][a-z]+\s+\d{1,2},\s*\d{4})/i);
+  if (!match) return null;
+  const parsed = new Date(match[1]);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return {
+    title: text.slice(0, 180),
+    date_value: parsed,
+    date_type: /meeting/i.test(text) ? "meeting" : /milestone/i.test(text) ? "milestone" : "deadline",
+  };
+}
+
+async function saveIssueIfNeeded(dbUserId, conversationId, message) {
+  const title = extractIssueTitle(message);
+  if (!title) return;
+  const existing = await prisma.issue.findFirst({
+    where: { user_id: dbUserId, conversation_id: conversationId, title },
+    orderBy: { created_at: "desc" },
+  });
+  if (existing) {
+    await prisma.issue.update({
+      where: { id: existing.id },
+      data: { last_discussed_at: new Date(), updated_at: new Date() },
+    });
+  } else {
+    await prisma.issue.create({
+      data: {
+        user_id: dbUserId,
+        conversation_id: conversationId,
+        title,
+        description: message,
+      },
+    });
+  }
+}
+
+async function saveRiskIfNeeded(dbUserId, conversationId, message) {
+  const title = extractRiskTitle(message);
+  if (!title) return;
+  const existing = await prisma.risk.findFirst({
+    where: { user_id: dbUserId, conversation_id: conversationId, title },
+    orderBy: { created_at: "desc" },
+  });
+  if (existing) {
+    await prisma.risk.update({
+      where: { id: existing.id },
+      data: { last_discussed_at: new Date(), updated_at: new Date() },
+    });
+  } else {
+    await prisma.risk.create({
+      data: {
+        user_id: dbUserId,
+        conversation_id: conversationId,
+        title,
+        description: message,
+      },
+    });
+  }
+}
+
+async function saveKeyDateIfNeeded(dbUserId, conversationId, message) {
+  const info = extractDateInfo(message);
+  if (!info) return;
+  const existing = await prisma.keyDate.findFirst({
+    where: {
+      user_id: dbUserId,
+      conversation_id: conversationId,
+      title: info.title,
+      date_value: info.date_value,
+    },
+  });
+  if (!existing) {
+    await prisma.keyDate.create({
+      data: {
+        user_id: dbUserId,
+        conversation_id: conversationId,
+        title: info.title,
+        date_type: info.date_type,
+        date_value: info.date_value,
+      },
+    });
+  }
+}
+
+async function saveMemoryArtifacts(dbUserId, conversationId, message, reply) {
+  await Promise.allSettled([
+    upsertUserProfileMemory(dbUserId, message),
+    saveIssueIfNeeded(dbUserId, conversationId, message),
+    saveRiskIfNeeded(dbUserId, conversationId, message),
+    saveKeyDateIfNeeded(dbUserId, conversationId, message),
+  ]);
+
+  const summary = `${message}\n\nAssistant reply:\n${reply}`.slice(0, 4000);
+  await prisma.memorySummary.create({
+    data: {
+      user_id: dbUserId,
+      conversation_id: conversationId,
+      summary_type: "chat_turn",
+      summary,
+      source_range: "latest_turn",
+    },
+  });
+}
+
+function buildSystemPrompt({ latestAnalysis, voiceMode = false, previewMode = false, useScheduleContext = false }) {
+  const scheduleBlock = latestAnalysis && useScheduleContext
+    ? `\nUSER CONTEXT:\nThe user has uploaded a project schedule.\nUse the saved analysis and raw schedule preview when the question is about schedule, milestones, dates, dependencies, risks, sequencing, task ownership, or timeline concerns.\n\nSaved analysis:\n${latestAnalysis.analysis}\n\nRaw schedule preview:\n${latestAnalysis.raw_schedule_preview || ""}\n`
+    : "\nUSER CONTEXT:\nUse general project coaching unless the user specifically asks about their uploaded schedule.\n";
 
   return `
 You are "Ray", an AI Project Management Coach for project managers using the ProjectPilot website.
@@ -211,96 +458,107 @@ STYLE RULES:
 - Focus on practical "what do I do next" advice.
 - Sound conversational, not robotic.
 - Treat short follow-up questions as part of the ongoing conversation unless the user clearly changes topics.
-${previewMode ? "- This is a short public preview experience.\n" : ""}${voiceMode ? `- This is voice mode. Keep answers short and natural to say aloud.
-- Default to 1 or 2 short sentences unless the user explicitly asks for detail.
-- For very simple questions, answer very briefly.\n` : ""}${scheduleHint}
+${previewMode ? "- This is a short public preview experience.\n" : ""}${voiceMode ? "- This is voice mode. Keep answers short and natural to say aloud.\n- Default to 1 or 2 short sentences unless the user explicitly asks for detail.\n- For very simple questions, answer very briefly.\n" : ""}${scheduleBlock}
 `.trim();
 }
 
-async function runRayChat({ userId, projectName, message, includeAudio = true, voiceMode = false }) {
-  ensureProjectSaved(userId, projectName);
-
-  const historyKey = `${userId}::${projectName || "general"}`;
-  const priorMessages = chatHistories.get(historyKey) || [];
-  const scheduleHint = getScheduleHint(userId, projectName);
+async function runRayChat({ externalUserId, projectName, message, includeAudio = true, voiceMode = false }) {
+  const dbUser = await upsertDbUser(externalUserId || "anonymous");
+  const conversation = await getOrCreateConversation(dbUser.id, projectName);
+  const latestAnalysis = await getLatestScheduleAnalysis(dbUser.id, conversation.id);
+  const useScheduleContext = isScheduleRelatedQuestion(message);
+  const priorMessages = await getRecentMessages(conversation.id, 12);
 
   const messages = [
-    { role: "system", content: getRaySystemPrompt(scheduleHint, { voiceMode }) },
+    {
+      role: "system",
+      content: buildSystemPrompt({ latestAnalysis, voiceMode, useScheduleContext }),
+    },
     ...priorMessages,
     { role: "user", content: message },
   ];
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4.1-mini",
-      messages,
-      temperature: voiceMode ? 0.35 : 0.5,
-      max_tokens: voiceMode ? 90 : 500,
-    }),
-  });
+  const data = await callOpenAI(messages, voiceMode ? 0.35 : 0.5, voiceMode ? 90 : 500);
+  const reply = data?.choices?.[0]?.message?.content?.trim() || "I’m not sure how to respond to that.";
 
-  if (!response.ok) {
-    const text = await response.text();
-    console.error("OpenAI chat error:", text);
-    throw new Error("OpenAI chat failed");
-  }
-
-  const data = await response.json();
-  const reply =
-    data?.choices?.[0]?.message?.content?.trim() ||
-    "I’m not sure how to respond to that.";
-
-  const updatedHistory = [
-    ...priorMessages,
-    { role: "user", content: message },
-    { role: "assistant", content: reply },
-  ].slice(-12);
-
-  chatHistories.set(historyKey, updatedHistory);
+  await saveMessage(conversation.id, dbUser.id, "user", message);
+  await saveMessage(conversation.id, dbUser.id, "assistant", reply);
+  await saveMemoryArtifacts(dbUser.id, conversation.id, message, reply);
 
   const result = { reply };
-
   if (includeAudio) {
     result.audioBase64 = await generateElevenLabsAudio(reply);
   }
-
   return result;
 }
 
-// ===============================
-// PROJECT LIST
-// ===============================
-app.get("/api/projects", (req, res) => {
+app.get("/", (req, res) => {
+  res.send("ProjectPilot backend is running.");
+});
+
+app.get("/api/test-supabase", async (req, res) => {
+  try {
+    const dbTest = await prisma.$queryRaw`select now() as current_time`;
+    const { data, error } = await supabaseAdmin.storage.listBuckets();
+    if (error) throw new Error(`Supabase storage error: ${error.message}`);
+    res.json({ ok: true, database: dbTest, buckets: data });
+  } catch (err) {
+    console.error("Supabase test error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/debug-schedule/:userId", async (req, res) => {
+  try {
+    const dbUser = await prisma.user.findUnique({
+      where: { external_user_id: req.params.userId },
+    });
+    if (!dbUser) return res.json({ userId: req.params.userId, saved: null });
+    const latestAnalysis = await prisma.scheduleAnalysis.findFirst({
+      where: { user_id: dbUser.id },
+      orderBy: { created_at: "desc" },
+    });
+    res.json({ userId: req.params.userId, saved: latestAnalysis || null });
+  } catch (err) {
+    console.error("Debug schedule error:", err);
+    res.status(500).json({ error: "Debug lookup failed" });
+  }
+});
+
+app.get("/api/projects", async (req, res) => {
   try {
     const userId = (req.query.userId || "").toString().trim();
+    if (!userId) return res.status(400).json({ error: "Missing userId." });
 
-    if (!userId) {
-      return res.status(400).json({ error: "Missing userId." });
-    }
-
-    const projects = userProjects.get(userId) || [];
-
-    return res.json({
-      projects: projects.map((name) => ({
-        id: name,
-        name,
-        updated_at: new Date().toISOString(),
-      })),
+    const dbUser = await prisma.user.findUnique({
+      where: { external_user_id: userId },
     });
+    if (!dbUser) return res.json({ projects: [] });
+
+    const conversations = await prisma.conversation.findMany({
+      where: { user_id: dbUser.id },
+      orderBy: { updated_at: "desc" },
+      select: { id: true, title: true, updated_at: true },
+    });
+
+    const seen = new Set();
+    const projects = conversations
+      .filter((c) => c.title && c.title !== "General")
+      .filter((c) => {
+        const key = c.title.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((c) => ({ id: c.id, name: c.title, updated_at: c.updated_at }));
+
+    return res.json({ projects });
   } catch (err) {
     console.error("Project list error:", err);
     return res.status(500).json({ error: "Could not load projects." });
   }
 });
 
-// ===============================
-// TRY RAY DEMO ENDPOINT
-// ===============================
 app.post("/api/try-ray", async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
@@ -310,15 +568,14 @@ app.post("/api/try-ray", async (req, res) => {
     const body = req.body || {};
     const userId = (body.userId || "anonymous").toString().trim();
     const message = (body.message || "").toString().trim();
+    const includeAudio = body.includeAudio !== false;
+    const voiceMode = !!body.voiceMode;
 
     if (!message) {
       return res.status(400).json({ error: "Message is required." });
     }
 
     const currentCount = tryRayCounts.get(userId) || 0;
-    const includeAudio = body.includeAudio !== false;
-    const voiceMode = !!body.voiceMode;
-
     if (currentCount >= TRY_RAY_LIMIT) {
       return res.json({
         reply: `You’ve used your ${TRY_RAY_LIMIT} free Try Ray questions. Please sign up for full Ray access to continue.`,
@@ -328,46 +585,22 @@ app.post("/api/try-ray", async (req, res) => {
       });
     }
 
-    const systemPrompt = getRaySystemPrompt("", {
-      previewMode: true,
-      voiceMode,
-    });
+    const systemPrompt = buildSystemPrompt({ latestAnalysis: null, previewMode: true, voiceMode, useScheduleContext: false });
+    const data = await callOpenAI(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message },
+      ],
+      voiceMode ? 0.35 : 0.5,
+      voiceMode ? 90 : 350
+    );
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message },
-        ],
-        temperature: voiceMode ? 0.35 : 0.5,
-        max_tokens: voiceMode ? 90 : 350,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      console.error("OpenAI API error:", text);
-      return res.status(500).json({ error: "OpenAI API error", detail: text });
-    }
-
-    const data = await response.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      "I’m not sure how to respond to that.";
-
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "I’m not sure how to respond to that.";
     const newCount = currentCount + 1;
     tryRayCounts.set(userId, newCount);
 
     let audioBase64 = null;
-    if (includeAudio) {
-      audioBase64 = await generateElevenLabsAudio(reply);
-    }
+    if (includeAudio) audioBase64 = await generateElevenLabsAudio(reply);
 
     return res.json({
       reply,
@@ -381,9 +614,6 @@ app.post("/api/try-ray", async (req, res) => {
   }
 });
 
-// ===============================
-// TRY RAY VOICE ENDPOINT
-// ===============================
 app.post("/api/try-ray-voice", upload.single("audio"), async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
@@ -391,7 +621,6 @@ app.post("/api/try-ray-voice", upload.single("audio"), async (req, res) => {
     }
 
     const userId = (req.body?.userId || "anonymous").toString().trim();
-
     const currentCount = tryRayCounts.get(userId) || 0;
     if (currentCount >= TRY_RAY_LIMIT) {
       return res.json({
@@ -412,54 +641,17 @@ app.post("/api/try-ray-voice", upload.single("audio"), async (req, res) => {
       req.file.mimetype || "audio/webm"
     );
 
-    if (!transcript) {
-      return res.status(400).json({ error: "Could not transcribe audio." });
-    }
+    const systemPrompt = buildSystemPrompt({ latestAnalysis: null, previewMode: true, voiceMode: true, useScheduleContext: false });
+    const data = await callOpenAI(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: transcript },
+      ],
+      0.35,
+      90
+    );
 
-    const systemPrompt = `
-You are Ray, a friendly AI project coach giving a short public preview.
-
-STYLE RULES:
-- Be warm, clear, practical, and conversational.
-- Help with project risks, priorities, planning, timelines, and next steps.
-- Keep responses useful and easy to understand.
-- If a user asks a short follow-up, assume they are continuing the same topic unless it is clearly a new one.
-- Use markdown when it helps clarity, especially bullet lists and simple tables.
-- This is voice mode.
-- Keep answers short and natural to say aloud.
-- Default to 1 or 2 short sentences unless the user explicitly asks for detail.
-- For very simple questions, answer very briefly.
-- This is a short public preview experience.
-`.trim();
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: transcript },
-        ],
-        temperature: 0.35,
-        max_tokens: 90,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      console.error("OpenAI API error:", text);
-      return res.status(500).json({ error: "OpenAI API error", detail: text });
-    }
-
-    const data = await response.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      "I’m not sure how to respond to that.";
-
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "I’m not sure how to respond to that.";
     const newCount = currentCount + 1;
     tryRayCounts.set(userId, newCount);
 
@@ -475,17 +667,10 @@ STYLE RULES:
   }
 });
 
-// ===============================
-// SPEAK ONLY ENDPOINT
-// ===============================
 app.post("/api/speak", async (req, res) => {
   try {
     const text = (req.body?.text || "").toString().trim();
-
-    if (!text) {
-      return res.status(400).json({ error: "Text is required." });
-    }
-
+    if (!text) return res.status(400).json({ error: "Text is required." });
     const audioBase64 = await generateElevenLabsAudio(text);
     return res.json({ audioBase64 });
   } catch (err) {
@@ -494,9 +679,6 @@ app.post("/api/speak", async (req, res) => {
   }
 });
 
-// ===============================
-// VOICE CHAT ENDPOINT
-// ===============================
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
@@ -521,67 +703,99 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     }
 
     const result = await runRayChat({
-      userId,
+      externalUserId: userId,
       projectName,
       message: transcript,
       includeAudio: false,
       voiceMode: true,
     });
 
-    return res.json({
-      transcript,
-      reply: result.reply,
-    });
+    return res.json({ transcript, reply: result.reply });
   } catch (err) {
     console.error("Voice chat error:", err);
     return res.status(500).json({ error: "Voice chat failed", detail: err.message });
   }
 });
 
-// ===============================
-// UPLOAD SCHEDULE
-// ===============================
+app.post("/api/chat", async (req, res) => {
+  try {
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
+    }
+
+    const body = req.body || {};
+    const userId = (body.userId || "anonymous").toString().trim();
+    const projectName = (body.projectName || "").toString().trim();
+    let message = "";
+    if (typeof body.message === "string") message = body.message.trim();
+    else if (typeof body.text === "string") message = body.text.trim();
+    const includeAudio = body.includeAudio !== false;
+    const voiceMode = !!body.voiceMode;
+
+    if (!message) {
+      return res.json({
+        reply: "Hi, I’m Ray. Tell me about your project and I’ll help you think through risks, priorities, and next steps.",
+        audioBase64: null,
+      });
+    }
+
+    const result = await runRayChat({
+      externalUserId: userId,
+      projectName,
+      message,
+      includeAudio,
+      voiceMode,
+    });
+
+    return res.json(result);
+  } catch (err) {
+    console.error("Chat error:", err);
+    return res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 app.post("/api/upload-schedule", upload.single("schedule"), async (req, res) => {
   try {
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
     }
 
-    const userId = (req.body?.userId || "anonymous").toString().trim();
+    const externalUserId = (req.body?.userId || "anonymous").toString().trim();
     const projectName = (req.body?.projectName || "").toString().trim();
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded." });
-    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded." });
+    if (!projectName) return res.status(400).json({ error: "Project name is required." });
 
-    if (!projectName) {
-      return res.status(400).json({ error: "Project name is required." });
-    }
+    const dbUser = await upsertDbUser(externalUserId);
+    const conversation = await getOrCreateConversation(dbUser.id, projectName);
+
+    const uploadedFile = await prisma.uploadedFile.create({
+      data: {
+        user_id: dbUser.id,
+        conversation_id: conversation.id,
+        filename: req.file.originalname,
+        storage_path: `pending/${Date.now()}-${req.file.originalname}`,
+        file_type: "schedule",
+        mime_type: req.file.mimetype || "text/csv",
+        size_bytes: req.file.size || 0,
+      },
+    });
 
     const csvText = req.file.buffer.toString("utf-8");
-
     let records;
     try {
-      records = parse(csvText, {
-        columns: true,
-        skip_empty_lines: true,
-      });
-    } catch (e) {
+      records = parse(csvText, { columns: true, skip_empty_lines: true });
+    } catch {
       return res.status(400).json({ error: "Could not parse CSV." });
     }
 
-    if (!records.length) {
-      return res.status(400).json({ error: "CSV contains no data." });
-    }
+    if (!records.length) return res.status(400).json({ error: "CSV contains no data." });
 
     const trimmed = records.slice(0, 120);
     const headers = Object.keys(trimmed[0] || {});
-
     const compactCsv = [
       headers.join(","),
-      ...trimmed.map((row) =>
-        headers.map((h) => String(row[h] ?? "").replace(/,/g, ";")).join(",")
-      ),
+      ...trimmed.map((row) => headers.map((h) => String(row[h] ?? "").replace(/,/g, ";")).join(",")),
     ].join("\n");
 
     const systemPrompt = `
@@ -605,71 +819,41 @@ End with 2-3 suggestions for what the user could ask next.
 Use clear headings and practical advice.
 `.trim();
 
-    const userPrompt = `
-Analyze this project schedule CSV for project "${projectName}":
+    const userPrompt = `Analyze this project schedule CSV for project "${projectName}":\n\n${compactCsv}`;
+    const data = await callOpenAI(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      0.3,
+      900
+    );
 
-${compactCsv}
-`.trim();
+    const analysis = data?.choices?.[0]?.message?.content?.trim() || "No analysis returned.";
+    const rawSchedulePreview = compactCsv.slice(0, 6000);
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+    await prisma.scheduleAnalysis.create({
+      data: {
+        user_id: dbUser.id,
+        conversation_id: conversation.id,
+        uploaded_file_id: uploadedFile.id,
+        analysis,
+        raw_schedule_preview: rawSchedulePreview,
+        analysis_version: "v1",
       },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: 0.3,
-      }),
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      console.error("OpenAI upload analysis error:", text);
-      return res.status(500).json({ error: "OpenAI API error", detail: text });
-    }
-
-    const data = await response.json();
-    const analysis =
-      data?.choices?.[0]?.message?.content?.trim() || "No analysis returned.";
-
-    ensureProjectSaved(userId, projectName);
-
-    const uploadKey = `${userId}::${projectName}`;
-    const uploadedAt = new Date().toISOString();
-
-    uploadedSchedules.set(uploadKey, {
-      analysis,
-      raw_schedule_preview: compactCsv,
-      records: trimmed,
-      fileName: req.file.originalname || "schedule.csv",
-      uploaded_at: uploadedAt,
-    });
-
-    const historyKey = `${userId}::${projectName || "general"}`;
-    const priorMessages = chatHistories.get(historyKey) || [];
     const assistantMessage = `I reviewed your uploaded schedule for "${projectName}".\n\n${analysis}`;
-
-    const updatedHistory = [
-      ...priorMessages,
-      { role: "assistant", content: assistantMessage },
-    ].slice(-12);
-
-    chatHistories.set(historyKey, updatedHistory);
+    await saveMessage(conversation.id, dbUser.id, "assistant", assistantMessage);
 
     const audioBase64 = await generateElevenLabsAudio(assistantMessage);
-
     return res.json({
       success: true,
       reply: assistantMessage,
       audioBase64,
       projectName,
       fileName: req.file.originalname || "schedule.csv",
-      uploadedAt,
+      uploadedAt: new Date().toISOString(),
     });
   } catch (err) {
     console.error("Upload error:", err);
@@ -677,48 +861,89 @@ ${compactCsv}
   }
 });
 
-// ===============================
-// MAIN RAY CHAT ENDPOINT
-// ===============================
-app.post("/api/chat", async (req, res) => {
+app.get("/api/openai/models", (req, res) => {
+  const apiKey = getInboundApiKey(req);
+  if (apiKey !== DID_CUSTOM_LLM_KEY) {
+    return res.status(401).json({ error: { message: "Unauthorized", code: "401", type: "Unauthorized", status: 401 } });
+  }
+  return res.json({ object: "list", data: [{ id: "gpt-4.1-mini", object: "model", owned_by: "projectpilot" }] });
+});
+
+app.get("/api/openai/v1/models", (req, res) => {
+  const apiKey = getInboundApiKey(req);
+  if (apiKey !== DID_CUSTOM_LLM_KEY) {
+    return res.status(401).json({ error: { message: "Unauthorized", code: "401", type: "Unauthorized", status: 401 } });
+  }
+  return res.json({ object: "list", data: [{ id: "gpt-4.1-mini", object: "model", owned_by: "projectpilot" }] });
+});
+
+async function handleLegacyOpenAICompat(req, res) {
   try {
-    if (!OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY on server." });
+    const apiKey = getInboundApiKey(req);
+    if (apiKey !== DID_CUSTOM_LLM_KEY) {
+      return res.status(401).json({ error: { message: "Unauthorized", code: "401", type: "Unauthorized", status: 401 } });
     }
 
     const body = req.body || {};
-    const userId = (body.userId || "anonymous").toString().trim();
-    const projectName = (body.projectName || "").toString().trim();
+    const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
+    const userId = (body.user || body.userId || "anonymous").toString();
+    const dbUser = await upsertDbUser(userId);
+    const latestAnalysis = await getLatestScheduleAnalysis(dbUser.id, null);
 
-    let message = "";
-    if (typeof body.message === "string") {
-      message = body.message.trim();
-    } else if (typeof body.text === "string") {
-      message = body.text.trim();
-    }
+    const forwardedMessages = [
+      { role: "system", content: buildSystemPrompt({ latestAnalysis, useScheduleContext: true }) },
+      ...incomingMessages
+        .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+        .map((m) => ({ role: m.role, content: normalizeMessageContent(m.content) })),
+    ];
 
-    const includeAudio = body.includeAudio !== false;
-    const voiceMode = !!body.voiceMode;
+    const data = await callOpenAI(forwardedMessages, 0.4, 500);
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "I'm not sure how to respond.";
 
-    if (!message) {
-      return res.json({
-        reply: "Hi, I’m Ray. Tell me about your project and I’ll help you think through risks, priorities, and next steps.",
-        audioBase64: null,
-      });
-    }
-
-    const result = await runRayChat({
-      userId,
-      projectName,
-      message,
-      includeAudio,
-      voiceMode,
+    return res.json({
+      id: `chatcmpl-${Date.now()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: "gpt-4.1-mini",
+      choices: [{ index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" }],
     });
-
-    return res.json(result);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error", detail: err.message });
+    console.error("OpenAI-compatible chat error:", err);
+    return res.status(500).json({ error: { message: err.message || "Server error", code: "500", type: "ServerError", status: 500 } });
+  }
+}
+
+app.post("/api/openai/chat/completions", handleLegacyOpenAICompat);
+app.post("/api/openai/v1/chat/completions", handleLegacyOpenAICompat);
+
+app.post("/api/did-llm", async (req, res) => {
+  try {
+    const apiKey = getInboundApiKey(req);
+    if (apiKey !== DID_CUSTOM_LLM_KEY) {
+      return res.status(401).json({ error: { message: "Unauthorized", code: "401", type: "Unauthorized", status: 401 } });
+    }
+
+    const body = req.body || {};
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const userId = (body.user || body.userId || "anonymous").toString();
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+
+    const dbUser = await upsertDbUser(userId);
+    const latestAnalysis = await getLatestScheduleAnalysis(dbUser.id, null);
+    const data = await callOpenAI(
+      [
+        { role: "system", content: buildSystemPrompt({ latestAnalysis, useScheduleContext: true }) },
+        { role: "user", content: normalizeMessageContent(lastUserMessage) },
+      ],
+      0.4,
+      500
+    );
+
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "I'm not sure how to respond.";
+    return res.json({ content: reply });
+  } catch (err) {
+    console.error("Legacy D-ID LLM error:", err);
+    return res.status(500).json({ error: { message: err.message || "Server error", code: "500", type: "ServerError", status: 500 } });
   }
 });
 
