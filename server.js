@@ -194,6 +194,27 @@ async function upsertDbUser(externalUserId) {
     create: { external_user_id: externalUserId, last_seen_at: new Date() },
   });
 }
+async function getOrCreateProjectForUser(dbUserId, projectName) {
+  const cleanName = (projectName || "").trim();
+  if (!cleanName) return null;
+
+  const existing = await prisma.project.findFirst({
+    where: {
+      user_id: dbUserId,
+      name: cleanName,
+    },
+  });
+
+  if (existing) return existing;
+
+  return prisma.project.create({
+    data: {
+      user_id: dbUserId,
+      name: cleanName,
+      status: "active",
+    },
+  });
+}
 
 function conversationTitleForProject(projectName) {
   return (projectName || "").trim() || "General";
