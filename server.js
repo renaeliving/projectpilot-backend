@@ -168,11 +168,11 @@ async function generateElevenLabsAudio(text) {
         body: JSON.stringify({
           text: speechText,
           model_id: "eleven_flash_v2_5",
-          voice_settings: {
-            stability: 0.4,
-            similarity_boost: 0.85,
-            speed: 1.18,
-          },
+         voice_settings: {
+  stability: 0.55,
+  similarity_boost: 0.85,
+  speed: 1.03,
+},
         }),
       }
     );
