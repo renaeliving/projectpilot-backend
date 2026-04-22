@@ -337,14 +337,13 @@ async function getRecentMessages(conversationId, limit = 12) {
   }));
 }
 
-async function saveMessage(conversationId, userId, role, content, projectId = null) {
+async function saveMessage(conversationId, userId, role, content) {
   await prisma.message.create({
     data: {
       conversation_id: conversationId,
       user_id: userId,
       role,
       content,
-      ...(projectId ? { project_id: projectId } : {}),
     },
   });
 
@@ -354,7 +353,7 @@ async function saveMessage(conversationId, userId, role, content, projectId = nu
   });
 }
 
-async function upsertUserProfileMemory(dbUserId, message, projectId = null) {
+async function upsertUserProfileMemory(dbUserId, message) {
   const text = (message || "").trim();
   if (!text) return;
 
@@ -391,7 +390,6 @@ async function upsertUserProfileMemory(dbUserId, message, projectId = null) {
       await prisma.userProfileMemory.create({
         data: {
           user_id: dbUserId,
-          ...(projectId ? { project_id: projectId } : {}),
           memory_type: p.type,
           memory_key: key,
           memory_value: value,
@@ -564,7 +562,7 @@ async function saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId 
 
 async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, projectId = null) {
   await Promise.allSettled([
-    upsertUserProfileMemory(dbUserId, message, projectId),
+    upsertUserProfileMemory(dbUserId, message),
     saveIssueIfNeeded(dbUserId, conversationId, message, projectId),
     saveRiskIfNeeded(dbUserId, conversationId, message, projectId),
     saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId),
@@ -574,7 +572,6 @@ async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, pro
     data: {
       user_id: dbUserId,
       conversation_id: conversationId,
-      ...(projectId ? { project_id: projectId } : {}),
       summary_type: "chat_turn",
       summary: `${message}\n\nAssistant reply:\n${reply}`.slice(0, 4000),
       source_range: "latest_turn",
@@ -653,8 +650,8 @@ async function runRayChat({ externalUserId, projectName, message, includeAudio =
     data?.choices?.[0]?.message?.content?.trim() ||
     "I’m not sure how to respond to that.";
 
-  await saveMessage(conversation.id, dbUser.id, "user", message, project?.id || null);
-  await saveMessage(conversation.id, dbUser.id, "assistant", reply, project?.id || null);
+  await saveMessage(conversation.id, dbUser.id, "user", message);
+  await saveMessage(conversation.id, dbUser.id, "assistant", reply);
   await saveMemoryArtifacts(
     dbUser.id,
     conversation.id,
@@ -1101,13 +1098,7 @@ ${compactCsv}
 
     const assistantMessage = `I reviewed your uploaded schedule for "${projectName}".\n\n${analysis}`;
 
-    await saveMessage(
-      conversation.id,
-      dbUser.id,
-      "assistant",
-      assistantMessage,
-      project?.id || null
-    );
+    await saveMessage(conversation.id, dbUser.id, "assistant", assistantMessage);
 
     const audioBase64 = await generateElevenLabsAudio(assistantMessage);
 
