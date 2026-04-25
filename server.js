@@ -995,6 +995,74 @@ async function saveExtractedRisks(dbUserId, conversationId, risks = [], projectI
     }
   }
 }
+async function extractSuggestedActivitiesFromReply(reply) {
+  const text = String(reply || "").trim();
+
+  if (!text) return [];
+
+  const likelyHasActions =
+    /\b(next step|recommended action|action item|task|activity|should|need to|needs to|follow up|assign|confirm|draft|review|complete|schedule|prepare|update|create|track|owner)\b/i.test(text);
+
+  if (!likelyHasActions) return [];
+
+  const systemPrompt = `
+You extract ONLY concrete project activities/tasks suggested by Ray in an assistant response.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "activities": [
+    {
+      "name": "short specific activity/task name",
+      "activity_type": "task | meeting | approval | testing | deployment | migration | planning",
+      "notes": "brief useful note"
+    }
+  ]
+}
+
+Rules:
+- Extract only concrete next actions, tasks, or activities that Ray clearly recommends.
+- Do NOT extract risks.
+- Do NOT extract issues.
+- Do NOT extract generic advice such as "track risks", "communicate clearly", or "monitor the project" unless it is a specific actionable task.
+- Do NOT extract headings.
+- Do NOT extract explanations.
+- Do NOT invent anything.
+- If there are no specific activities, return {"activities":[]}.
+`.trim();
+
+  try {
+    const data = await callOpenAI(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Ray response:\n${text}` },
+      ],
+      0,
+      500
+    );
+
+    const raw =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      '{"activities":[]}';
+
+    const parsed = parseArtifactJson(raw);
+
+    return normalizeArtifactArray(parsed.activities)
+      .map((item) => {
+        const name = cleanArtifactText(item.name || item.title, 180);
+        if (!name) return null;
+
+        return {
+          name,
+          activity_type: cleanArtifactText(item.activity_type || inferActivityType(name), 50) || "task",
+          notes: cleanArtifactText(item.notes || item.description || `Suggested by Ray: ${name}`, 500),
+        };
+      })
+      .filter(Boolean);
+  } catch (err) {
+    console.error("Assistant activity extraction failed:", err);
+    return [];
+  }
+}
 async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, projectId = null) {
   const extractedArtifacts = await extractProjectArtifacts(message);
 
