@@ -745,7 +745,256 @@ async function saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId 
     });
   }
 }
+function cleanArtifactText(value, maxLength = 500) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, maxLength);
+}
 
+function parseArtifactJson(rawText) {
+  const cleaned = String(rawText || "")
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  const jsonText = jsonMatch ? jsonMatch[0] : cleaned;
+
+  return JSON.parse(jsonText);
+}
+
+function normalizeArtifactArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+async function extractProjectArtifacts(message) {
+  const text = String(message || "").trim();
+
+  if (!text) {
+    return {
+      activities: [],
+      issues: [],
+      risks: [],
+    };
+  }
+
+  const systemPrompt = `
+You extract structured project artifacts from a single user message.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "activities": [
+    {
+      "name": "short specific activity/task name",
+      "activity_type": "task | meeting | approval | testing | deployment | migration | planning",
+      "notes": "brief useful note"
+    }
+  ],
+  "issues": [
+    {
+      "title": "short specific issue title",
+      "description": "brief issue description"
+    }
+  ],
+  "risks": [
+    {
+      "title": "short specific risk title",
+      "description": "brief risk description"
+    }
+  ]
+}
+
+Rules:
+- Extract ONLY real project artifacts explicitly stated by the user.
+- Do NOT extract general questions, definitions, learning questions, examples, or report/list requests.
+- Do NOT extract anything from "What is a risk?", "How do I track risks?", "Show me the risk log", "What is an issue?", "Show me all issues", "What activities go in a schedule?", or similar questions.
+- Do NOT invent artifacts.
+- If the user asks Ray to explain, show, list, define, or teach something, return empty arrays.
+- If the user says multiple risks, issues, or activities in one message, return all of them as separate objects.
+- A risk is an uncertain future event that may affect the project.
+- An issue is a current problem/blocker already happening.
+- An activity is specific work that needs to be done.
+- Keep titles short and clean.
+- If nothing should be saved, return {"activities":[],"issues":[],"risks":[]}.
+`.trim();
+
+  try {
+    const data = await callOpenAI(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `User message:\n${text}` },
+      ],
+      0,
+      700
+    );
+
+    const raw =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      '{"activities":[],"issues":[],"risks":[]}';
+
+    const parsed = parseArtifactJson(raw);
+
+    return {
+      activities: normalizeArtifactArray(parsed.activities)
+        .map((item) => {
+          const name = cleanArtifactText(item.name || item.title, 180);
+          if (!name) return null;
+
+          return {
+            name,
+            activity_type: cleanArtifactText(item.activity_type || inferActivityType(name), 50) || "task",
+            notes: cleanArtifactText(item.notes || item.description || name, 500),
+          };
+        })
+        .filter(Boolean),
+
+      issues: normalizeArtifactArray(parsed.issues)
+        .map((item) => {
+          const title = cleanArtifactText(item.title || item.name, 180);
+          if (!title) return null;
+
+          return {
+            title,
+            description: cleanArtifactText(item.description || title, 500),
+          };
+        })
+        .filter(Boolean),
+
+      risks: normalizeArtifactArray(parsed.risks)
+        .map((item) => {
+          const title = cleanArtifactText(item.title || item.name, 180);
+          if (!title) return null;
+
+          return {
+            title,
+            description: cleanArtifactText(item.description || title, 500),
+          };
+        })
+        .filter(Boolean),
+    };
+  } catch (err) {
+    console.error("Artifact extraction failed:", err);
+    return {
+      activities: [],
+      issues: [],
+      risks: [],
+    };
+  }
+}
+
+async function saveExtractedActivities(dbUserId, conversationId, activities = [], projectId = null) {
+  for (const activity of activities) {
+    const name = cleanArtifactText(activity.name, 180);
+    if (!name) continue;
+
+    const existing = await prisma.activity.findFirst({
+      where: {
+        user_id: dbUserId,
+        name,
+        ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (existing) {
+      await prisma.activity.update({
+        where: { id: existing.id },
+        data: {
+          activity_type: cleanArtifactText(activity.activity_type || existing.activity_type || "task", 50),
+          notes: cleanArtifactText(activity.notes || existing.notes || name, 500),
+          updated_at: new Date(),
+        },
+      });
+    } else {
+      await prisma.activity.create({
+        data: {
+          user_id: dbUserId,
+          conversation_id: conversationId,
+          ...(projectId ? { project_id: projectId } : {}),
+          name,
+          activity_type: cleanArtifactText(activity.activity_type || inferActivityType(name), 50) || "task",
+          status: "planned",
+          notes: cleanArtifactText(activity.notes || name, 500),
+        },
+      });
+    }
+  }
+}
+
+async function saveExtractedIssues(dbUserId, conversationId, issues = [], projectId = null) {
+  for (const issue of issues) {
+    const title = cleanArtifactText(issue.title, 180);
+    if (!title) continue;
+
+    const existing = await prisma.issue.findFirst({
+      where: {
+        user_id: dbUserId,
+        title,
+        ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (existing) {
+      await prisma.issue.update({
+        where: { id: existing.id },
+        data: {
+          description: cleanArtifactText(issue.description || existing.description || title, 500),
+          last_discussed_at: new Date(),
+          updated_at: new Date(),
+        },
+      });
+    } else {
+      await prisma.issue.create({
+        data: {
+          user_id: dbUserId,
+          conversation_id: conversationId,
+          ...(projectId ? { project_id: projectId } : {}),
+          title,
+          description: cleanArtifactText(issue.description || title, 500),
+        },
+      });
+    }
+  }
+}
+
+async function saveExtractedRisks(dbUserId, conversationId, risks = [], projectId = null) {
+  for (const risk of risks) {
+    const title = cleanArtifactText(risk.title, 180);
+    if (!title) continue;
+
+    const existing = await prisma.risk.findFirst({
+      where: {
+        user_id: dbUserId,
+        title,
+        ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (existing) {
+      await prisma.risk.update({
+        where: { id: existing.id },
+        data: {
+          description: cleanArtifactText(risk.description || existing.description || title, 500),
+          last_discussed_at: new Date(),
+          updated_at: new Date(),
+        },
+      });
+    } else {
+      await prisma.risk.create({
+        data: {
+          user_id: dbUserId,
+          conversation_id: conversationId,
+          ...(projectId ? { project_id: projectId } : {}),
+          title,
+          description: cleanArtifactText(risk.description || title, 500),
+        },
+      });
+    }
+  }
+}
 async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, projectId = null) {
   const memorySaveResults = await Promise.allSettled([
     upsertUserProfileMemory(dbUserId, message),
