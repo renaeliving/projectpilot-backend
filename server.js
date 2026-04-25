@@ -278,14 +278,31 @@ function conversationTitleForProject(projectName) {
 async function getOrCreateConversation(dbUserId, projectName, project = null) {
   const title = conversationTitleForProject(projectName);
 
-  let conversation = await prisma.conversation.findFirst({
-    where: {
-      user_id: dbUserId,
-      title,
-      status: "active",
-    },
-    orderBy: { updated_at: "desc" },
-  });
+  let conversation = null;
+
+  if (project) {
+    conversation = await prisma.conversation.findFirst({
+      where: {
+        user_id: dbUserId,
+        status: "active",
+        OR: [
+          { project_id: project.id },
+          { title, project_id: null },
+        ],
+      },
+      orderBy: { updated_at: "desc" },
+    });
+  } else {
+    conversation = await prisma.conversation.findFirst({
+      where: {
+        user_id: dbUserId,
+        title,
+        status: "active",
+        project_id: null,
+      },
+      orderBy: { updated_at: "desc" },
+    });
+  }
 
   if (!conversation) {
     conversation = await prisma.conversation.create({
@@ -296,10 +313,14 @@ async function getOrCreateConversation(dbUserId, projectName, project = null) {
         ...(project ? { project_id: project.id } : {}),
       },
     });
-  } else if (project && !conversation.project_id) {
+  } else if (project && conversation.project_id !== project.id) {
     conversation = await prisma.conversation.update({
       where: { id: conversation.id },
-      data: { project_id: project.id },
+      data: {
+        project_id: project.id,
+        title,
+        updated_at: new Date(),
+      },
     });
   }
 
@@ -307,10 +328,8 @@ async function getOrCreateConversation(dbUserId, projectName, project = null) {
 }
 
 async function getLatestScheduleAnalysis(dbUserId, conversationId = null, projectId = null) {
-  let latestAnalysis = null;
-
   if (projectId) {
-    latestAnalysis = await prisma.scheduleAnalysis.findFirst({
+    return prisma.scheduleAnalysis.findFirst({
       where: {
         user_id: dbUserId,
         project_id: projectId,
@@ -320,26 +339,19 @@ async function getLatestScheduleAnalysis(dbUserId, conversationId = null, projec
     });
   }
 
-  if (!latestAnalysis && conversationId) {
-    latestAnalysis = await prisma.scheduleAnalysis.findFirst({
+  if (conversationId) {
+    return prisma.scheduleAnalysis.findFirst({
       where: {
         user_id: dbUserId,
         conversation_id: conversationId,
+        project_id: null,
       },
       orderBy: { created_at: "desc" },
       include: { uploaded_file: true },
     });
   }
 
-  if (!latestAnalysis) {
-    latestAnalysis = await prisma.scheduleAnalysis.findFirst({
-      where: { user_id: dbUserId },
-      orderBy: { created_at: "desc" },
-      include: { uploaded_file: true },
-    });
-  }
-
-  return latestAnalysis;
+  return null;
 }
 
 async function getRecentMessages(conversationId, limit = 12) {
@@ -607,14 +619,14 @@ async function saveActivityIfNeeded(dbUserId, conversationId, message, projectId
   const info = extractActivityInfo(message);
   if (!info) return;
 
-  const existing = await prisma.activity.findFirst({
-    where: {
-      user_id: dbUserId,
-      conversation_id: conversationId,
-      name: info.name,
-    },
-    orderBy: { created_at: "desc" },
-  });
+ const existing = await prisma.activity.findFirst({
+  where: {
+    user_id: dbUserId,
+    name: info.name,
+    ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+  },
+  orderBy: { created_at: "desc" },
+});
 
   if (existing) {
     await prisma.activity.update({
@@ -644,13 +656,13 @@ async function saveIssueIfNeeded(dbUserId, conversationId, message, projectId = 
   if (!title) return;
 
   const existing = await prisma.issue.findFirst({
-    where: {
-      user_id: dbUserId,
-      conversation_id: conversationId,
-      title,
-    },
-    orderBy: { created_at: "desc" },
-  });
+  where: {
+    user_id: dbUserId,
+    title,
+    ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+  },
+  orderBy: { created_at: "desc" },
+});
 
   if (existing) {
     await prisma.issue.update({
@@ -677,14 +689,14 @@ async function saveRiskIfNeeded(dbUserId, conversationId, message, projectId = n
   const title = extractRiskTitle(message);
   if (!title) return;
 
-  const existing = await prisma.risk.findFirst({
-    where: {
-      user_id: dbUserId,
-      conversation_id: conversationId,
-      title,
-    },
-    orderBy: { created_at: "desc" },
-  });
+ const existing = await prisma.risk.findFirst({
+  where: {
+    user_id: dbUserId,
+    title,
+    ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+  },
+  orderBy: { created_at: "desc" },
+});
 
   if (existing) {
     await prisma.risk.update({
@@ -735,13 +747,27 @@ async function saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId 
 }
 
 async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, projectId = null) {
-  await Promise.allSettled([
+  const memorySaveResults = await Promise.allSettled([
     upsertUserProfileMemory(dbUserId, message),
     saveActivityIfNeeded(dbUserId, conversationId, message, projectId),
     saveIssueIfNeeded(dbUserId, conversationId, message, projectId),
     saveRiskIfNeeded(dbUserId, conversationId, message, projectId),
     saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId),
   ]);
+
+  const memoryLabels = [
+    "userProfileMemory",
+    "activity",
+    "issue",
+    "risk",
+    "keyDate",
+  ];
+
+  memorySaveResults.forEach((result, index) => {
+    if (result.status === "rejected") {
+      console.error(`Memory save failed for ${memoryLabels[index]}:`, result.reason);
+    }
+  });
 
   await prisma.memorySummary.create({
     data: {
