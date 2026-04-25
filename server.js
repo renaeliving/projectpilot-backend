@@ -141,6 +141,88 @@ function isScheduleRelatedQuestion(message) {
   ];
   return keywords.some((k) => text.includes(k));
 }
+function isRiskLogQuestion(message) {
+  const text = (message || "").toLowerCase();
+
+  const hasRiskWord =
+    text.includes("risk") ||
+    text.includes("risks") ||
+    text.includes("risk log") ||
+    text.includes("risk register");
+
+  const hasListIntent =
+    text.includes("show") ||
+    text.includes("list") ||
+    text.includes("complete") ||
+    text.includes("all") ||
+    text.includes("log") ||
+    text.includes("register") ||
+    text.includes("track") ||
+    text.includes("tracking");
+
+  return hasRiskWord && hasListIntent;
+}
+
+function isIssueLogQuestion(message) {
+  const text = (message || "").toLowerCase();
+
+  const hasIssueWord =
+    text.includes("issue") ||
+    text.includes("issues") ||
+    text.includes("problem") ||
+    text.includes("problems") ||
+    text.includes("issue log") ||
+    text.includes("issue register");
+
+  const hasListIntent =
+    text.includes("show") ||
+    text.includes("list") ||
+    text.includes("complete") ||
+    text.includes("all") ||
+    text.includes("log") ||
+    text.includes("register") ||
+    text.includes("track") ||
+    text.includes("tracking") ||
+    text.includes("open");
+
+  return hasIssueWord && hasListIntent;
+}
+
+function isActivityListQuestion(message) {
+  const text = (message || "").toLowerCase();
+
+  const hasActivityWord =
+    text.includes("activity") ||
+    text.includes("activities") ||
+    text.includes("task") ||
+    text.includes("tasks") ||
+    text.includes("action item") ||
+    text.includes("action items") ||
+    text.includes("schedule");
+
+  const hasListIntent =
+    text.includes("show") ||
+    text.includes("list") ||
+    text.includes("complete") ||
+    text.includes("all") ||
+    text.includes("activity list") ||
+    text.includes("task list") ||
+    text.includes("build a schedule") ||
+    text.includes("create a schedule") ||
+    text.includes("make a schedule") ||
+    text.includes("schedule from my activities") ||
+    text.includes("schedule from the activities");
+
+  return hasActivityWord && hasListIntent;
+}
+
+function shouldUseArtifactContext(message) {
+  return (
+    isRiskLogQuestion(message) ||
+    isIssueLogQuestion(message) ||
+    isActivityListQuestion(message)
+  );
+}
 
 async function callOpenAI(messages, temperature = 0.4, maxTokens = 500) {
   const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -353,7 +435,123 @@ async function getLatestScheduleAnalysis(dbUserId, conversationId = null, projec
 
   return null;
 }
+async function getSavedRisksForContext(dbUserId, conversationId, projectId = null) {
+  return prisma.risk.findMany({
+    where: {
+      user_id: dbUserId,
+      ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+    },
+    orderBy: { created_at: "asc" },
+    take: 100,
+  });
+}
 
+async function getSavedIssuesForContext(dbUserId, conversationId, projectId = null) {
+  return prisma.issue.findMany({
+    where: {
+      user_id: dbUserId,
+      ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+    },
+    orderBy: { created_at: "asc" },
+    take: 100,
+  });
+}
+
+async function getSavedActivitiesForContext(dbUserId, conversationId, projectId = null) {
+  return prisma.activity.findMany({
+    where: {
+      user_id: dbUserId,
+      ...(projectId ? { project_id: projectId } : { conversation_id: conversationId }),
+    },
+    orderBy: { created_at: "asc" },
+    take: 150,
+  });
+}
+
+function formatSavedRisksForPrompt(risks = []) {
+  if (!risks.length) return "No saved risks found.";
+
+  return risks
+    .map((risk, index) => {
+      return [
+        `${index + 1}. ${risk.title || "Untitled risk"}`,
+        risk.description ? `Description: ${risk.description}` : "",
+        risk.status ? `Status: ${risk.status}` : "",
+        risk.likelihood ? `Likelihood: ${risk.likelihood}` : "",
+        risk.impact ? `Impact: ${risk.impact}` : "",
+        risk.severity ? `Severity: ${risk.severity}` : "",
+        risk.mitigation ? `Mitigation: ${risk.mitigation}` : "",
+        risk.contingency_plan ? `Contingency: ${risk.contingency_plan}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+}
+
+function formatSavedIssuesForPrompt(issues = []) {
+  if (!issues.length) return "No saved issues found.";
+
+  return issues
+    .map((issue, index) => {
+      return [
+        `${index + 1}. ${issue.title || "Untitled issue"}`,
+        issue.description ? `Description: ${issue.description}` : "",
+        issue.status ? `Status: ${issue.status}` : "",
+        issue.severity ? `Severity: ${issue.severity}` : "",
+        issue.owner ? `Owner: ${issue.owner}` : "",
+        issue.resolution_notes ? `Resolution notes: ${issue.resolution_notes}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+}
+
+function formatSavedActivitiesForPrompt(activities = []) {
+  if (!activities.length) return "No saved activities found.";
+
+  return activities
+    .map((activity, index) => {
+      return [
+        `${index + 1}. ${activity.name || "Untitled activity"}`,
+        activity.activity_type ? `Type: ${activity.activity_type}` : "",
+        activity.status ? `Status: ${activity.status}` : "",
+        activity.owner ? `Owner: ${activity.owner}` : "",
+        activity.start_date ? `Start: ${activity.start_date}` : "",
+        activity.finish_date ? `Finish: ${activity.finish_date}` : "",
+        activity.predecessors ? `Predecessors: ${activity.predecessors}` : "",
+        activity.successors ? `Successors: ${activity.successors}` : "",
+        activity.notes ? `Notes: ${activity.notes}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+}
+
+function buildArtifactContextBlock({ risks = [], issues = [], activities = [] }) {
+  return `
+SAVED PROJECT ARTIFACTS FOR THIS PROJECT:
+
+RISKS:
+${formatSavedRisksForPrompt(risks)}
+
+ISSUES:
+${formatSavedIssuesForPrompt(issues)}
+
+ACTIVITIES:
+${formatSavedActivitiesForPrompt(activities)}
+
+Rules for using saved artifacts:
+- When the user asks for a risk log, risk register, or complete list of risks, use the SAVED RISKS above as the source of truth.
+- When the user asks for an issue log, issue register, or complete list of issues, use the SAVED ISSUES above as the source of truth.
+- When the user asks for activities, tasks, action items, or to build a schedule from activities, use the SAVED ACTIVITIES above as the source of truth.
+- Do not omit saved items.
+- If a section says no saved items found, say that clearly.
+- Do not invent extra saved risks, issues, or activities.
+`.trim();
+}
 async function getRecentMessages(conversationId, limit = 12) {
   const rows = await prisma.message.findMany({
     where: { conversation_id: conversationId },
@@ -1149,8 +1347,30 @@ async function runRayChat({ externalUserId, projectName, message, includeAudio =
     conversation.id,
     project?.id || null
   );
-  const useScheduleContext = isScheduleRelatedQuestion(message);
+    const useScheduleContext = isScheduleRelatedQuestion(message);
+  const useArtifactContext = shouldUseArtifactContext(message);
+
   const priorMessages = await getRecentMessages(conversation.id, 12);
+
+  const savedRisks = useArtifactContext
+    ? await getSavedRisksForContext(dbUser.id, conversation.id, project?.id || null)
+    : [];
+
+  const savedIssues = useArtifactContext
+    ? await getSavedIssuesForContext(dbUser.id, conversation.id, project?.id || null)
+    : [];
+
+  const savedActivities = useArtifactContext
+    ? await getSavedActivitiesForContext(dbUser.id, conversation.id, project?.id || null)
+    : [];
+
+  const savedArtifactContext = useArtifactContext
+    ? buildArtifactContextBlock({
+        risks: savedRisks,
+        issues: savedIssues,
+        activities: savedActivities,
+      })
+    : "";
 
   const messages = [
     {
@@ -1162,6 +1382,16 @@ async function runRayChat({ externalUserId, projectName, message, includeAudio =
         useScheduleContext,
       }),
     },
+
+    ...(savedArtifactContext
+      ? [
+          {
+            role: "system",
+            content: savedArtifactContext,
+          },
+        ]
+      : []),
+
     ...priorMessages,
     { role: "user", content: message },
   ];
