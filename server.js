@@ -1065,10 +1065,16 @@ Rules:
 }
 async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, projectId = null) {
   const extractedArtifacts = await extractProjectArtifacts(message);
+  const raySuggestedActivities = await extractSuggestedActivitiesFromReply(reply);
+
+  const combinedActivities = [
+    ...extractedArtifacts.activities,
+    ...raySuggestedActivities,
+  ];
 
   const memorySaveResults = await Promise.allSettled([
     upsertUserProfileMemory(dbUserId, message),
-    saveExtractedActivities(dbUserId, conversationId, extractedArtifacts.activities, projectId),
+    saveExtractedActivities(dbUserId, conversationId, combinedActivities, projectId),
     saveExtractedIssues(dbUserId, conversationId, extractedArtifacts.issues, projectId),
     saveExtractedRisks(dbUserId, conversationId, extractedArtifacts.risks, projectId),
     saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId),
