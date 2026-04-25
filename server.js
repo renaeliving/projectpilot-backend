@@ -13,9 +13,10 @@ const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
 const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "").trim();
 const DID_CUSTOM_LLM_KEY = process.env.DID_CUSTOM_LLM_KEY || "ray-secret-key-111";
 const TRY_RAY_LIMIT = 30;
+const TRY_RAY_HISTORY_LIMIT = 10;
 
 const tryRayCounts = new Map();
-
+const tryRayHistories = new Map();
 const ALLOWED_ORIGINS = [
   "https://projectpilot.ai",
   "https://www.projectpilot.ai",
@@ -76,7 +77,23 @@ function normalizeMessageContent(content) {
   if (content == null) return "";
   return String(content);
 }
+function getTryRayHistory(userId) {
+  const cleanUserId = (userId || "anonymous").toString().trim() || "anonymous";
+  return tryRayHistories.get(cleanUserId) || [];
+}
 
+function saveTryRayTurn(userId, userMessage, assistantReply) {
+  const cleanUserId = (userId || "anonymous").toString().trim() || "anonymous";
+  const existingHistory = tryRayHistories.get(cleanUserId) || [];
+
+  const updatedHistory = [
+    ...existingHistory,
+    { role: "user", content: userMessage },
+    { role: "assistant", content: assistantReply },
+  ].slice(-TRY_RAY_HISTORY_LIMIT);
+
+  tryRayHistories.set(cleanUserId, updatedHistory);
+}
 function cleanTextForSpeech(text) {
   return String(text || "")
     .replace(/```[\s\S]*?```/g, " ")
@@ -789,21 +806,25 @@ app.post("/api/try-ray", async (req, res) => {
       useScheduleContext: false,
     });
 
-    const data = await callOpenAI(
-      [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message },
-      ],
-      voiceMode ? 0.35 : 0.5,
-      voiceMode ? 90 : 350
-    );
+    const priorTryRayMessages = getTryRayHistory(userId);
+
+const data = await callOpenAI(
+  [
+    { role: "system", content: systemPrompt },
+    ...priorTryRayMessages,
+    { role: "user", content: message },
+  ],
+  voiceMode ? 0.35 : 0.5,
+  voiceMode ? 90 : 350
+);
 
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
 
     const newCount = currentCount + 1;
-    tryRayCounts.set(userId, newCount);
+tryRayCounts.set(userId, newCount);
+saveTryRayTurn(userId, message, reply);
 
     let audioBase64 = null;
     if (includeAudio) {
@@ -857,21 +878,25 @@ app.post("/api/try-ray-voice", upload.single("audio"), async (req, res) => {
       useScheduleContext: false,
     });
 
-    const data = await callOpenAI(
-      [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: transcript },
-      ],
-      0.35,
-      90
-    );
+  const priorTryRayMessages = getTryRayHistory(userId);
+
+const data = await callOpenAI(
+  [
+    { role: "system", content: systemPrompt },
+    ...priorTryRayMessages,
+    { role: "user", content: transcript },
+  ],
+  0.35,
+  90
+);
 
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m not sure how to respond to that.";
 
     const newCount = currentCount + 1;
-    tryRayCounts.set(userId, newCount);
+tryRayCounts.set(userId, newCount);
+saveTryRayTurn(userId, transcript, reply);
 
     return res.json({
       transcript,
