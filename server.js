@@ -417,24 +417,123 @@ async function upsertUserProfileMemory(dbUserId, message) {
     }
   }
 }
-
-function extractIssueTitle(message) {
+function extractActivityInfo(message) {
   const text = (message || "").trim();
+
+  if (!text) return null;
+
+  // Do NOT save general questions, learning questions, or reporting requests as activities.
+  const isQuestion =
+    text.endsWith("?") ||
+    /^(what|how|why|when|where|who|can|could|should|would|do|does|did|is|are)\b/i.test(text);
+
+  const isActivityManagementQuestion =
+    /\b(activity|activities|task|tasks|schedule|plan|workstream|action item|action items)\b/i.test(text) &&
+    /\b(what is|what are|how do|how should|show|list|display|complete list|all|track|tracking|manage|explain|define|example|examples|build|create a schedule|make a schedule)\b/i.test(text);
+
+  if (isQuestion || isActivityManagementQuestion) {
+    return null;
+  }
+
   const patterns = [
-    /(?:blocked by|blocked on)\s+(.+)/i,
-    /waiting for\s+(.+)/i,
-    /delayed because\s+(.+)/i,
-    /issue[:\-]?\s+(.+)/i,
-    /problem[:\-]?\s+(.+)/i,
+    /\bactivity\s*[:\-]\s*(.+)/i,
+    /\btask\s*[:\-]\s*(.+)/i,
+    /\baction item\s*[:\-]\s*(.+)/i,
+    /\btodo\s*[:\-]\s*(.+)/i,
+    /\badd an activity to\s+(.+)/i,
+    /\badd a task to\s+(.+)/i,
+    /\badd an action item to\s+(.+)/i,
+    /\bwe need to\s+(.+)/i,
+    /\bi need to\s+(.+)/i,
+    /\bthe team needs to\s+(.+)/i,
+    /\b(?:john|jane|vendor|pm|project manager|qa|it|facilities|developer|development team|operations|ops)\s+needs to\s+(.+)/i,
   ];
 
   for (const p of patterns) {
     const m = text.match(p);
-    if (m) return m[1].trim().slice(0, 180);
+    if (m && m[1]) {
+      const name = m[1].trim().replace(/[.]+$/, "").slice(0, 180);
+      if (!name) return null;
+
+      return {
+        name,
+        activity_type: inferActivityType(name),
+        notes: name,
+      };
+    }
   }
 
-  if (/blocked|delay|issue|problem|not ready|stuck/i.test(text)) {
-    return text.slice(0, 180);
+  // Catch clear imperative task statements only.
+  const imperativeTask = text.match(
+    /^(complete|finish|draft|create|review|build|configure|test|deploy|migrate|validate|finalize|approve|schedule|hold|conduct|prepare|submit|update|document|assign|confirm)\s+(.+)/i
+  );
+
+  if (imperativeTask) {
+    const name = text.trim().replace(/[.]+$/, "").slice(0, 180);
+
+    return {
+      name,
+      activity_type: inferActivityType(name),
+      notes: name,
+    };
+  }
+
+  return null;
+}
+
+function inferActivityType(activityName) {
+  const text = (activityName || "").toLowerCase();
+
+  if (/\bmeeting|workshop|review session|standup\b/.test(text)) return "meeting";
+  if (/\bapproval|approve|sign[- ]?off|signoff\b/.test(text)) return "approval";
+  if (/\btest|testing|uat|qa|validate|validation\b/.test(text)) return "testing";
+  if (/\bdeploy|deployment|go-live|launch|release\b/.test(text)) return "deployment";
+  if (/\bmigrate|migration|data load|conversion\b/.test(text)) return "migration";
+  if (/\bdesign|requirements|discovery|scope\b/.test(text)) return "planning";
+
+  return "task";
+}
+function extractIssueTitle(message) {
+  const text = (message || "").trim();
+
+  if (!text) return null;
+
+  const isQuestion =
+    text.endsWith("?") ||
+    /^(what|how|why|when|where|who|can|could|should|would|do|does|did|is|are)\b/i.test(text);
+
+  const isIssueManagementQuestion =
+    /\b(issue|issues|issue log|issue register|problem|problems)\b/i.test(text) &&
+    /\b(what is|what are|how do|how should|show|list|display|complete|all|track|tracking|manage|explain|define|example|examples)\b/i.test(text);
+
+  if (isQuestion || isIssueManagementQuestion) {
+    return null;
+  }
+
+  const patterns = [
+    /\bissue\s*[:\-]\s*(.+)/i,
+    /\bproblem\s*[:\-]\s*(.+)/i,
+    /\b(?:the issue is|an issue is|issue is)\s+(.+)/i,
+    /\b(?:the problem is|a problem is|problem is)\s+(.+)/i,
+    /\b(?:we are blocked by|we're blocked by|i am blocked by|i'm blocked by)\s+(.+)/i,
+    /\b(?:we are blocked on|we're blocked on|i am blocked on|i'm blocked on)\s+(.+)/i,
+    /\b(?:we are waiting for|we're waiting for|i am waiting for|i'm waiting for)\s+(.+)/i,
+    /\b(?:delayed because|blocked because|stuck because)\s+(.+)/i,
+  ];
+
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m && m[1]) {
+      return m[1].trim().replace(/[.]+$/, "").slice(0, 180);
+    }
+  }
+
+  const looksLikeSpecificIssue =
+    /\b(blocked|stuck|delayed|waiting for|waiting on|not ready|missing|failed|unable to|cannot|can't)\b/i.test(text) &&
+    /\b(approval|vendor|resource|team|task|dependency|file|data|testing|deployment|schedule|milestone|deliverable|access|environment|server|upload|integration)\b/i.test(text);
+
+  if (looksLikeSpecificIssue) {
+    return text.replace(/[.]+$/, "").slice(0, 180);
   }
 
   return null;
@@ -442,21 +541,43 @@ function extractIssueTitle(message) {
 
 function extractRiskTitle(message) {
   const text = (message || "").trim();
+
+  if (!text) return null;
+
+  const isQuestion =
+    text.endsWith("?") ||
+    /^(what|how|why|when|where|who|can|could|should|would|do|does|did|is|are)\b/i.test(text);
+
+  const isRiskManagementQuestion =
+    /\b(risk|risks|risk log|risk register)\b/i.test(text) &&
+    /\b(what is|what are|how do|how should|show|list|display|complete|all|track|tracking|manage|explain|define|example|examples)\b/i.test(text);
+
+  if (isQuestion || isRiskManagementQuestion) {
+    return null;
+  }
+
   const patterns = [
-    /risk (?:is|that)?\s+(.+)/i,
-    /worried (?:that )?(.+)/i,
-    /concerned (?:that )?(.+)/i,
-    /might\s+(.+)/i,
-    /could\s+(.+)/i,
+    /\b(?:risk|project risk)\s*[:\-]\s*(.+)/i,
+    /\b(?:the risk is|a risk is|risk is)\s+(.+)/i,
+    /\b(?:the risk that|a risk that|risk that)\s+(.+)/i,
+    /\b(?:we have a risk that|i have a risk that|there is a risk that)\s+(.+)/i,
+    /\b(?:i am worried that|i'm worried that|we are worried that|we're worried that)\s+(.+)/i,
+    /\b(?:i am concerned that|i'm concerned that|we are concerned that|we're concerned that)\s+(.+)/i,
   ];
 
   for (const p of patterns) {
     const m = text.match(p);
-    if (m) return m[1].trim().slice(0, 180);
+    if (m && m[1]) {
+      return m[1].trim().replace(/[.]+$/, "").slice(0, 180);
+    }
   }
 
-  if (/risk|worried|concern|could|might|slip/i.test(text)) {
-    return text.slice(0, 180);
+  const looksLikeSpecificRisk =
+    /\b(may|might|could|likely to|at risk of|risk of)\b/i.test(text) &&
+    /\b(delay|delayed|slip|miss|missed|late|blocked|overrun|shortage|dependency|approval|vendor|resource|budget|timeline|deadline|milestone|testing|deployment|go-live|procurement)\b/i.test(text);
+
+  if (looksLikeSpecificRisk) {
+    return text.replace(/[.]+$/, "").slice(0, 180);
   }
 
   return null;
@@ -482,7 +603,42 @@ function extractDateInfo(message) {
       : "deadline",
   };
 }
+async function saveActivityIfNeeded(dbUserId, conversationId, message, projectId = null) {
+  const info = extractActivityInfo(message);
+  if (!info) return;
 
+  const existing = await prisma.activity.findFirst({
+    where: {
+      user_id: dbUserId,
+      conversation_id: conversationId,
+      name: info.name,
+    },
+    orderBy: { created_at: "desc" },
+  });
+
+  if (existing) {
+    await prisma.activity.update({
+      where: { id: existing.id },
+      data: {
+        activity_type: info.activity_type,
+        notes: info.notes,
+        updated_at: new Date(),
+      },
+    });
+  } else {
+    await prisma.activity.create({
+      data: {
+        user_id: dbUserId,
+        conversation_id: conversationId,
+        ...(projectId ? { project_id: projectId } : {}),
+        name: info.name,
+        activity_type: info.activity_type,
+        status: "planned",
+        notes: info.notes,
+      },
+    });
+  }
+}
 async function saveIssueIfNeeded(dbUserId, conversationId, message, projectId = null) {
   const title = extractIssueTitle(message);
   if (!title) return;
@@ -511,7 +667,7 @@ async function saveIssueIfNeeded(dbUserId, conversationId, message, projectId = 
         conversation_id: conversationId,
         ...(projectId ? { project_id: projectId } : {}),
         title,
-        description: message,
+        description: title,
       },
     });
   }
@@ -545,7 +701,7 @@ async function saveRiskIfNeeded(dbUserId, conversationId, message, projectId = n
         conversation_id: conversationId,
         ...(projectId ? { project_id: projectId } : {}),
         title,
-        description: message,
+       description: title,
       },
     });
   }
@@ -581,6 +737,7 @@ async function saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId 
 async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, projectId = null) {
   await Promise.allSettled([
     upsertUserProfileMemory(dbUserId, message),
+    saveActivityIfNeeded(dbUserId, conversationId, message, projectId),
     saveIssueIfNeeded(dbUserId, conversationId, message, projectId),
     saveRiskIfNeeded(dbUserId, conversationId, message, projectId),
     saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId),
