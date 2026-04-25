@@ -996,19 +996,21 @@ async function saveExtractedRisks(dbUserId, conversationId, risks = [], projectI
   }
 }
 async function saveMemoryArtifacts(dbUserId, conversationId, message, reply, projectId = null) {
+  const extractedArtifacts = await extractProjectArtifacts(message);
+
   const memorySaveResults = await Promise.allSettled([
     upsertUserProfileMemory(dbUserId, message),
-    saveActivityIfNeeded(dbUserId, conversationId, message, projectId),
-    saveIssueIfNeeded(dbUserId, conversationId, message, projectId),
-    saveRiskIfNeeded(dbUserId, conversationId, message, projectId),
+    saveExtractedActivities(dbUserId, conversationId, extractedArtifacts.activities, projectId),
+    saveExtractedIssues(dbUserId, conversationId, extractedArtifacts.issues, projectId),
+    saveExtractedRisks(dbUserId, conversationId, extractedArtifacts.risks, projectId),
     saveKeyDateIfNeeded(dbUserId, conversationId, message, projectId),
   ]);
 
   const memoryLabels = [
     "userProfileMemory",
-    "activity",
-    "issue",
-    "risk",
+    "activities",
+    "issues",
+    "risks",
     "keyDate",
   ];
 
