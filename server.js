@@ -1424,7 +1424,36 @@ async function runRayChat({ externalUserId, projectName, message, includeAudio =
 
   return result;
 }
+app.get("/api/health", async (req, res) => {
+  const startedAt = Date.now();
 
+  const health = {
+    ok: true,
+    service: "ProjectPilot Ray Backend",
+    timestamp: new Date().toISOString(),
+    checks: {
+      server: "ok",
+      database: "unknown",
+      openai_key_configured: !!OPENAI_API_KEY,
+      elevenlabs_key_configured: !!ELEVENLABS_API_KEY,
+      elevenlabs_voice_configured: !!ELEVENLABS_VOICE_ID,
+    },
+    response_ms: null,
+  };
+
+  try {
+    await prisma.$queryRaw`select 1`;
+    health.checks.database = "ok";
+  } catch (err) {
+    health.ok = false;
+    health.checks.database = "failed";
+    health.database_error = err.message || "Database check failed";
+  }
+
+  health.response_ms = Date.now() - startedAt;
+
+  res.status(health.ok ? 200 : 500).json(health);
+});
 app.get("/", (req, res) => {
   res.send("ProjectPilot backend is running.");
 });
